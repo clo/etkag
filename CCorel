@@ -1,0 +1,1800 @@
+Option Compare Database
+Option Explicit
+'------------------------------------------------------
+' author:       Christian Lochmatter
+'
+' class:        CCorel
+'
+' date:         21.02.2014
+'
+' description:  represents CCorel class
+'
+'------------------------------------------------------
+
+'#ELEKTROPLANER#
+'#KUNDE#
+'#ANLAGE#
+'#SCHEMANR# OR #OffertenNr#
+'#TYP#
+'#KOMMISSION#
+'#S.ZEICHNER#
+'#S.KONTROLLEUR#
+
+'#BASISSCHUTZ# ? Nenndaten
+'#IP-SCHUTZ# ?
+'#SCHUTZART# ?
+'#NENNFREQUENZ# ?
+'#BEMESSUNGSSPANNUNG# ?
+'#BEMESSUNGSSTROM# ?
+'#KURZSCHLUSSFESTIGKEIT# ?
+'#BASISNORM#, #PRODUKTENORM#
+
+'#S.DATUM# Datum beim generieren
+'#AS# Aktuelle Seite
+'#NS# Nächste Seite
+'#VS# Vordere Seite
+'#SCHEMAVERSION# oder #Version#
+'#INDEX# ?
+
+Private idauftrag As Integer
+Private idofferte As Integer
+Private idkunde As Integer
+'Private idadresseElektroschema As Double
+'Private kundennummerElektroschema As Double
+Private logoName As String
+Private versionname As String
+Private version As String
+Private docname As String
+Public originalDocName As String
+Private specialPlaceholder As Variant
+Private currentPageName As String
+Private currentPageNumber As Integer
+Private nextPageNumber As String
+Private previousPageNumber As String
+Public pagePattern As String
+Private nrOfPages As Integer
+Private pageformat As String
+Private log As String
+Private logoCenterX As Double
+Private logoCenterY As Double
+Private processLogo As Boolean
+Private corel As CorelDRAW.Application
+Private doc As CorelDRAW.Document
+Public page As CorelDRAW.page
+Public colPath As collection
+Public rowPath As collection
+Public pathPrefix As String
+Public legendPathShape As New CCorelShape
+Public legends As collection
+
+Public Sub class_initialize()
+    init
+    pagePattern = "^[a-zA-Z0-9\s]+\s([0-9]+)"
+End Sub
+
+Public Sub class_Terminate()
+
+End Sub
+
+Private Sub setCurrentPageName(name As String)
+On Error GoTo err_setCurrentPageName
+    currentPageName = name
+    Dim regex As New RegExp
+    regex.pattern = "^[a-zA-Z0-9\s]+\s([0-9]+)$"
+    Dim match As Variant
+    Set match = regex.Execute(name)
+    currentPageNumber = CInt(match.item(0).SubMatches(0) - 1)
+    processPageNumber
+    'Debug.Print name & " => " & currentPageNumber
+ex_setCurrentPageName:
+    Exit Sub
+err_setCurrentPageName:
+    logerror "setCurrentPageName name=" & name & " auftrag=" & idauftrag & " doc=" & doc, SYSTEM_EXCEPTION
+    Resume ex_setCurrentPageName
+End Sub
+
+Public Function getCurrentPageNumber(name As String)
+On Error GoTo err_getCurrentPageNumber
+    currentPageName = name
+    Dim regex As New RegExp
+    regex.pattern = "^[a-zA-Z0-9\s]+\s([0-9]+)$"
+    Dim match As Variant
+    Set match = regex.Execute(name)
+    currentPageNumber = CInt(match.item(0).SubMatches(0) - 1)
+    getCurrentPageNumber = currentPageNumber
+ex_getCurrentPageNumber:
+    Exit Function
+err_getCurrentPageNumber:
+    logerror "getCurrentPageNumber name=" & name & " auftrag=" & idauftrag & " doc=" & doc, SYSTEM_EXCEPTION
+    Resume ex_getCurrentPageNumber
+End Function
+
+Public Sub processPageNumber()
+    'currentPageNumber = currentPageNumber - 1
+    '0, AS=00, VS=--,   NS=01
+    '1, AS=01, VS=00, NS=02
+    '...
+    'n, AS=n,  VS=n-1, NS=--
+    
+    previousPageNumber = currentPageNumber - 1
+    nextPageNumber = currentPageNumber + 1
+    
+    'Spezialfall: 1.Seite
+    If currentPageNumber = 0 Then
+        previousPageNumber = "--"
+        nextPageNumber = currentPageNumber + 1
+    End If
+    
+    'Spezialfall: letzte Seite
+    If (currentPageNumber + 1) = nrOfPages Then
+        previousPageNumber = currentPageNumber - 1
+        nextPageNumber = "--"
+    End If
+    
+    'Debug.Print "AS=" & currentPageNumber & " VS=" & previousPageNumber & " NS=" & nextPageNumber
+End Sub
+
+
+Public Function getDocument()
+    If doc Is Nothing And docname <> "" Then
+        openCorel
+    End If
+    Set getDocument = doc
+End Function
+
+Public Sub setIdAuftrag(id As Integer, versions As String, versionnames As String)
+    init
+    idauftrag = id
+    versionname = versionnames
+    version = versions
+    Dim auftrag As New CAuftrag
+    auftrag.setIdAuftrag idauftrag
+    idofferte = auftrag.getOffertid
+    Dim offerte As New COfferte
+    offerte.setid idofferte
+    idkunde = offerte.getValue("idkunde")
+    Set auftrag = Nothing
+    Set offerte = Nothing
+End Sub
+
+Public Sub setCoreDocName(name As String)
+    docname = name
+End Sub
+
+Public Sub setOrginalDocName(name As String)
+    originalDocName = name
+End Sub
+
+Public Sub processPlaceholder(Optional processLogoNew As Boolean = False, _
+                              Optional originalFileName As String = "", _
+                              Optional newfilename As String = "", _
+                              Optional cql As Boolean = False)
+    processLogo = processLogoNew
+    docname = newfilename
+    originalDocName = originalFileName
+    openCorel cql
+End Sub
+
+Public Function countShapes(Optional originalFileName As String = "")
+    Dim shapes As New CorelDRAW.ShapeRange
+    Set shapes = page.shapes.FindShapes(Query:="@type = 'text' and @com.text.story.text('#')")
+    countShapes = shapes.count
+End Function
+
+Public Function getPages()
+    If corel Is Nothing Or doc Is Nothing Then
+        Set corel = New CorelDRAW.Application
+        Set doc = corel.OpenDocument(docname)
+    End If
+    Set getPages = doc.pages
+End Function
+
+Public Function getFirstPage()
+    If corel Is Nothing Or doc Is Nothing Then
+        Set corel = New CorelDRAW.Application
+        Set doc = corel.OpenDocument(docname)
+    End If
+    Set getFirstPage = doc.pages.First
+End Function
+
+Public Function getShapes(ByRef page As CorelDRAW.page)
+    Set getShapes = page.shapes
+End Function
+
+Public Sub deleteShapeOnDesktop()
+On Error GoTo err_deleteShapeOnDesktop
+    loginfo "deleteShapeOnDesktop", SYSTEM_AUDIT
+    Dim nr As Long
+    Dim shape As CorelDRAW.shape
+    Dim page As CorelDRAW.page
+    nr = 0
+    Set page = getFirstPage
+    
+    For Each shape In page.shapes
+        If shape.Layer.isDesktopLayer Then
+            shape.delete
+            nr = nr + 1
+        End If
+    Next
+    loginfo "deleteShapeOnDesktop nr_of_shapes_deleted_on_dektop=" & nr, SYSTEM_AUDIT
+ex_deleteShapeOnDesktop:
+    Exit Sub
+err_deleteShapeOnDesktop:
+    logerror "deleteShapeOnDesktop firstpage=" & page, SYSTEM_EXCEPTION
+    Resume ex_deleteShapeOnDesktop
+End Sub
+
+Public Sub deleteShape(page As CorelDRAW.page, storytext As String)
+On Error GoTo err_deleteShape
+    loginfo "deleteShape storytext=" & storytext, SYSTEM_AUDIT
+    Dim nr As Long
+    Dim shape As CorelDRAW.shape
+    nr = 0
+    Dim shapes As CorelDRAW.ShapeRange
+    Set shapes = page.shapes.FindShapes(Query:="@type='text:artistic' and " & _
+                                                "@com.text.story.text.startswith('" & storytext & "')")
+    For Each shape In shapes
+        shape.delete
+        nr = nr + 1
+    Next
+    'loginfo "deleteShape storytext=" & storytext & " nr_of_shapes_deleted=" & nr, SYSTEM_AUDIT
+ex_deleteShape:
+    Exit Sub
+err_deleteShape:
+    logerror "deleteShape page=" & page.name & " storytext=" & storytext & " nr_of_shapes=" & nr, SYSTEM_EXCEPTION
+    Resume ex_deleteShape
+End Sub
+
+Public Sub deleteShapeOnAllPages(storytext As String, Optional shapetype As String = "text:artistic")
+On Error GoTo err_deleteShapeOnAllPages
+    If corel Is Nothing Or doc Is Nothing Then
+        Set corel = New CorelDRAW.Application
+        loginfo "initPath major=" & corel.VersionMajor & " minor=" & corel.VersionMinor & " build=" & corel.VersionBuild, SYSTEM_AUDIT
+        Set doc = corel.OpenDocument(docname)
+    End If
+    loginfo "deleteShapeOnAllPages storytext=" & storytext, SYSTEM_AUDIT
+    Dim nr As Long
+    Dim shape As CorelDRAW.shape
+    nr = 0
+    Dim shapes As CorelDRAW.ShapeRange
+    Dim page As CorelDRAW.page
+    For Each page In getPages
+        Set shapes = page.shapes.FindShapes(Query:="@type='" & shapetype & "' and " & _
+                                                   "@com.text.story.text.startswith('" & storytext & "')")
+        For Each shape In shapes
+            shape.delete
+            nr = nr + 1
+        Next
+    Next
+ex_deleteShapeOnAllPages:
+    Exit Sub
+err_deleteShapeOnAllPages:
+    logerror "deleteShapeOnAllPages page=" & page.name & " storytext=" & storytext & " nr_of_shapes=" & nr, SYSTEM_EXCEPTION
+    Resume ex_deleteShapeOnAllPages
+End Sub
+
+Public Sub deleteShapeOnAllPagesByName(name As String, Optional shapetype As String = "rectangle")
+On Error GoTo err_deleteShapeOnAllPagesByName
+    If corel Is Nothing Or doc Is Nothing Then
+        Set corel = New CorelDRAW.Application
+        loginfo "initPath major=" & corel.VersionMajor & " minor=" & corel.VersionMinor & " build=" & corel.VersionBuild, SYSTEM_AUDIT
+        Set doc = corel.OpenDocument(docname)
+    End If
+    loginfo "deleteShapeOnAllPagesByName name=" & name, SYSTEM_AUDIT
+    Dim nr As Long
+    Dim shape As CorelDRAW.shape
+    nr = 0
+    Dim shapes As CorelDRAW.ShapeRange
+    Dim page As CorelDRAW.page
+    For Each page In getPages
+        Set shapes = page.shapes.FindShapes(Query:="@type='" & shapetype & "' and " & _
+                                                   "@name='" & name & "'")
+        For Each shape In shapes
+            shape.delete
+            nr = nr + 1
+        Next
+    Next
+ex_deleteShapeOnAllPagesByName:
+    Exit Sub
+err_deleteShapeOnAllPagesByName:
+    logerror "deleteShapeOnAllPagesByName page=" & page.name & " name=" & name & " nr_of_shapes=" & nr, SYSTEM_EXCEPTION
+    Resume ex_deleteShapeOnAllPagesByName
+End Sub
+
+Public Sub hideShapeOnAllPagesByName(name As String, Optional shapetype As String = "rectangle")
+On Error GoTo err_hideShapeOnAllPagesByName
+    If corel Is Nothing Or doc Is Nothing Then
+        Set corel = New CorelDRAW.Application
+        loginfo "initPath major=" & corel.VersionMajor & " minor=" & corel.VersionMinor & " build=" & corel.VersionBuild, SYSTEM_AUDIT
+        Set doc = corel.OpenDocument(docname)
+    End If
+    loginfo "hideShapeOnAllPagesByName name=" & name, SYSTEM_AUDIT
+    Dim nr As Long
+    Dim shape As CorelDRAW.shape
+    nr = 0
+    Dim shapes As CorelDRAW.ShapeRange
+    Dim page As CorelDRAW.page
+    For Each page In getPages
+        Set shapes = page.shapes.FindShapes(Query:="@type='" & shapetype & "' and " & _
+                                                   "@name='" & name & "'")
+        For Each shape In shapes
+            shape.Visible = False
+            nr = nr + 1
+        Next
+    Next
+ex_hideShapeOnAllPagesByName:
+    Exit Sub
+err_hideShapeOnAllPagesByName:
+    logerror "hideShapeOnAllPagesByName page=" & page.name & " name=" & name & " nr_of_shapes=" & nr, SYSTEM_EXCEPTION
+    Resume ex_hideShapeOnAllPagesByName
+End Sub
+
+Public Sub changeOutlineWidthShapeOnAllPagesByName(name As String, linewidth As Double, Optional shapetype As String = "rectangle")
+On Error GoTo err_changeColorShapeOnAllPagesByName
+    If corel Is Nothing Or doc Is Nothing Then
+        Set corel = New CorelDRAW.Application
+        loginfo "initPath major=" & corel.VersionMajor & " minor=" & corel.VersionMinor & " build=" & corel.VersionBuild, SYSTEM_AUDIT
+        Set doc = corel.OpenDocument(docname)
+    End If
+    loginfo "changeColorShapeOnAllPagesByName name=" & name, SYSTEM_AUDIT
+    Dim nr As Long
+    Dim shape As CorelDRAW.shape
+    nr = 0
+    Dim shapes As CorelDRAW.ShapeRange
+    Dim page As CorelDRAW.page
+    For Each page In getPages
+        Set shapes = page.shapes.FindShapes(Query:="@type='" & shapetype & "' and " & _
+                                                   "@name='" & name & "'")
+        For Each shape In shapes
+            shape.Outline.width = linewidth
+            nr = nr + 1
+        Next
+    Next
+ex_changeColorShapeOnAllPagesByName:
+    Exit Sub
+err_changeColorShapeOnAllPagesByName:
+    logerror "changeColorShapeOnAllPagesByName page=" & page.name & " name=" & name & " nr_of_shapes=" & nr, SYSTEM_EXCEPTION
+    Resume ex_changeColorShapeOnAllPagesByName
+End Sub
+
+Private Sub init()
+    Dim mydef As New mydef
+    pageformat = mydef.corelPageFormat
+    Set mydef = Nothing
+End Sub
+
+Public Sub initPath(ByRef page As CorelDRAW.page)
+On Error GoTo err_initPath
+    If corel Is Nothing Or doc Is Nothing Then
+        Set corel = New CorelDRAW.Application
+        loginfo "initPath major=" & corel.VersionMajor & " minor=" & corel.VersionMinor & " build=" & corel.VersionBuild, SYSTEM_AUDIT
+        Set doc = corel.OpenDocument(docname)
+    End If
+    Set colPath = Nothing 'initialize each time
+    If colPath Is Nothing Then
+        Set colPath = New collection
+    End If
+    Set rowPath = Nothing
+    If rowPath Is Nothing Then
+        Set rowPath = New collection
+    End If
+    
+    Dim shape As CorelDRAW.shape
+    'doc.ReferencePoint = cdrBottomRight
+'    For Each shape In getShapesByCQL(page, "@type='text:artistic' " & _
+'                                           "and @com.text.story.text.startswith('pfad_') " & _
+'                                           "and @com.layer.isDesktopLayer=TRUE")
+    For Each shape In getShapesByCQL(page, "@type='rectangle' " & _
+                                           "and @name.startswith('pfad_') " & _
+                                           "and @com.layer.isDesktopLayer=TRUE")
+        ' check if it is a pfad object
+        ' horizontal=letters, vertical=numbers
+        If InStr(shape.name, getSysValue("corel_pfad_identifikation")) >= 0 Then
+            logdebug "page=" & page.name & " shape.name=" & shape.name, DEBUG_KJOFF
+            Dim s As New CCorelShape
+            If IsNumeric(Right(shape.name, 1)) Then
+                logdebug "vertical: " & page.name & " " & shape.name, DEBUG_KJOFF
+                s.setName shape.name
+                s.setPosition shape.PositionX, shape.PositionY, shape.SizeWidth
+                colPath.add s, shape.name
+            End If
+            If isLetter(Right(shape.name, 1)) Then
+                logdebug "horizontal: " & page.name & " " & shape.name, DEBUG_KJOFF
+                s.setName shape.name
+                s.setPosition shape.PositionX, shape.PositionY, shape.SizeWidth
+                rowPath.add s, shape.name
+            End If
+            Set s = Nothing
+        End If
+    Next
+exit_initPath:
+    Exit Sub
+err_initPath:
+    logerror "There is a problem with the name=" & docname & " on page=" & page.name & ", shape=" & shape.name, SYSTEM_EXCEPTION
+    MsgBox getText(226) & " Seite=" & page.name & " Shape=" & shape.name, vbCritical
+    closeWithoutSaveCorel
+    Resume exit_initPath
+End Sub
+
+Public Sub initLegend(ByRef page As CorelDRAW.page)
+On Error GoTo err_initLegend
+    If corel Is Nothing Or doc Is Nothing Then
+        Set corel = New CorelDRAW.Application
+        loginfo "initPath major=" & corel.VersionMajor & " minor=" & corel.VersionMinor & " build=" & corel.VersionBuild, SYSTEM_AUDIT
+        Set doc = corel.OpenDocument(docname)
+    End If
+    
+    Dim shape As CorelDRAW.shape
+    Dim s As New CCorelShape
+    Dim shapes As CorelDRAW.ShapeRange
+    Set shapes = page.shapes.FindShapes(Query:="@com.Name='" & getSysValue("corel_legende_identifikation") & "' and @com.layer.isDesktopLayer=TRUE")
+    If shapes.count <> 1 Then
+        logerror "initLegend no shape with name legend defined.", SYSTEM_EXCEPTION
+        MsgBox getText(258), vbInformation
+        Exit Sub
+    End If
+    For Each shape In shapes
+        s.setPosition shape.PositionX, shape.PositionY, shape.SizeWidth, shape.SizeHeight
+        Set legendPathShape = s
+        'Debug.Print "centerX=" & shape.CenterX & " centerY=" & shape.CenterY & " positionX=" & shape.PositionX & " positionY=" & shape.PositionY
+    Next
+exit_initLegend:
+    Exit Sub
+err_initLegend:
+    logerror "initLegend There is a problem with the page=" & page.name & ", shape=" & shape.name, SYSTEM_EXCEPTION
+    MsgBox getText(226) & " Seite=" & page.name & " Shape=" & shape.name, vbCritical
+    closeWithoutSaveCorel
+    Resume exit_initLegend
+End Sub
+
+Public Function getShapeByName(name As String, Optional page As CorelDRAW.page = Null, Optional isDesktopLayer As String = "True")
+    If page Is Nothing Then
+        Set page = getFirstPage
+    End If
+    Set getShapeByName = getShapesByCQL(page, "@name='" & name & "' and @com.layer.isDesktopLayer=" & isDesktopLayer)
+End Function
+
+Public Sub prepareLegends(ByRef page As CorelDRAW.page, storytext As String)
+On Error GoTo err_prepareLegends
+    loginfo "prepareLegends page=" & page.name & " storytext=" & storytext, SYSTEM_AUDIT
+    If corel Is Nothing Or doc Is Nothing Then
+        Set corel = New CorelDRAW.Application
+        loginfo "initPath major=" & corel.VersionMajor & " minor=" & corel.VersionMinor & " build=" & corel.VersionBuild, SYSTEM_AUDIT
+        Set doc = corel.OpenDocument(docname)
+    End If
+    
+    If pageformat = "" Then
+        init
+    End If
+    
+    If legendPathShape Is Nothing Then
+        initLegend getFirstPage
+    End If
+    
+    Dim shapes As CorelDRAW.ShapeRange
+    Dim shape As CorelDRAW.shape
+    Dim position As String
+    
+    Set shapes = page.shapes.FindShapes(Query:="@type='text:artistic' " & _
+                                               " and @com.text.story.text.startswith('" & storytext & "') " & _
+                                               " and @com.layer.isDesktopLayer=FALSE")
+    'Debug.Print page.name & " " & storytext
+    'Debug.Print "page=" & page.name & " count=" & shapes.shapes.count
+    If shapes.shapes.count > 0 Then
+        For Each shape In shapes
+            'loginfo "page=" & page.name & " shape=" & shape.text.Story.text, SYSTEM_AUDIT
+            position = getPathPosition(shape)
+            
+            Dim regex As New RegExp
+            regex.pattern = "#TL([0-9]{2}[A-Z]{1}[0-9]{1}\.?[0-9]?)@(.*)#"
+            'Debug.Print shape.text.Story.text
+            If regex.test(shape.text.Story.text) Then
+                ' #TL
+                ' e.g. #TL05P2@Strassenbeleuchtung#
+                Dim myshape As New CCorelShape
+                myshape.setPagename page.name
+                myshape.setPath position
+                myshape.pagenr = getCurrentPageNumber(page.name)
+                'Debug.Print "#TL " & page.name & " - " & shape.text.Story.text
+                Dim matches As Variant
+                Set matches = regex.Execute(shape.text.Story.text)
+                Dim match As Variant
+                For Each match In matches
+                    myshape.formatedMatchingText = MyCStr(match.SubMatches.item(0))
+                    If match.SubMatches.count >= 2 Then
+                        myshape.setText MyCStr(match.SubMatches.item(1))
+                    End If
+                Next
+                legends.add myshape
+            Else
+                ' #QP, #FP
+                'Debug.Print "#QP/#FP " & page.name & " - " & shape.text.Story.text
+                getLegendByPageAndPosition page, position, shape.text.Story.text
+            End If
+        Next
+    End If
+exit_prepareLegends:
+    Exit Sub
+err_prepareLegends:
+    logerror "preprareLegends There is a problem with the page=" & page.name & ", shape=" & shape.name, SYSTEM_EXCEPTION
+    MsgBox getText(226) & " Seite=" & page.name & " Shape=" & shape.name, vbCritical
+    closeWithoutSaveCorel
+    Resume exit_prepareLegends
+End Sub
+
+Public Function getLegendByPageAndPosition(ByRef page As CorelDRAW.page, position As String, matchingtext As String)
+    On Error GoTo err_getLegendByPageAndPosition
+    
+    Dim shapes As CorelDRAW.ShapeRange
+    Dim shape As CorelDRAW.shape
+    Dim path As CCorelShape
+    
+    If legends Is Nothing Then
+        Set legends = New collection
+    End If
+    Set shapes = page.shapes.FindShapes(Query:="@type='text:artistic' " & _
+                                               " and not @com.text.story.text.startswith('/') " & _
+                                               " and @com.layer.isDesktopLayer=FALSE" & _
+                                               " and @com.centerY<" & legendPathShape.posY & _
+                                               " and @com.centerY>" & legendPathShape.posY - legendPathShape.height & _
+                                               " and @com.text.Story.size=6")
+    'Debug.Print "getLegendByPageAndPosition page=" & page.name & " count=" & shapes.shapes.count
+    For Each shape In shapes
+        'Debug.Print "getLegendByPageAndPosition page=" & page.name & " text=" & shape.text.Story.text & " PositionY=" & shape.PositionY
+        If position = getPathPosition(shape) Then
+            Dim myshape As New CCorelShape
+            myshape.setPagename page.name
+            myshape.setPath position
+            myshape.setText shape.text.Story.text
+            myshape.setMatchingText matchingtext
+            myshape.pagenr = getCurrentPageNumber(page.name)
+            
+            '#FP# => 01F8
+            '#QP# => 01Q1
+            Dim regex As New RegExp
+            Dim matches As Variant
+            regex.pattern = "#([A-Z])P#"
+            If regex.test(myshape.matchingtext) Then
+                Set matches = regex.Execute(myshape.matchingtext)
+                myshape.setFormatedMatchingText formatPageNumber(myshape.pagenr) & _
+                                                matches.item(0).SubMatches.item(0) & _
+                                                position
+            End If
+            '#TL20P1 => 20P1
+            regex.pattern = "#TL([0-9]{2}[A-Z]{1}[0-9]{1}\.?[0-9]?)#"
+            If regex.test(myshape.matchingtext) Then
+                Set matches = regex.Execute(myshape.matchingtext)
+                myshape.setFormatedMatchingText matches.item(0).SubMatches.item(0)
+            End If
+            legends.add myshape
+            Set myshape = Nothing
+        End If
+    Next
+    
+ex_getLegendByPageAndPosition:
+    Exit Function
+err_getLegendByPageAndPosition:
+    logerror "getLegendByPageAndPosition page=" & page.name & " position=" & position, SYSTEM_EXCEPTION
+    Resume ex_getLegendByPageAndPosition
+End Function
+
+Private Sub initLogoPosition()
+On Error GoTo err_initLogoPosition
+    Dim page As CorelDRAW.page
+    Set page = getDocument.pages.First
+    Dim shape As CorelDRAW.shape
+    'TODO findShapes CQL
+    For Each shape In page.shapes
+        If shape.name = getSysValue("corel_logo_identifikation") Then
+            logoCenterX = shape.centerx
+            logoCenterY = shape.centery
+            'Debug.Print shape.name & ": " & shape.CenterX & "/" & shape.CenterY
+        End If
+    Next
+    logdebug "importLogo done auftrag=" & idauftrag & " doc=" & doc, SYSTEM_AUDIT
+ex_initLogoPosition:
+    Exit Sub
+err_initLogoPosition:
+    logerror "importLogo done auftrag=" & idauftrag & " doc=" & doc, SYSTEM_AUDIT
+    Resume ex_initLogoPosition
+End Sub
+
+Private Sub importLogo()
+On Error GoTo err_importLogo
+    Dim address As New CAdresse
+    address.setidByParameter idkunde, "idadresse"
+    Dim logo As String
+    logo = address.getValue("corel_logo")
+    Set address = Nothing
+    If isNullOrEmtpy(logo) Then
+        Set address = New CAdresse
+        address.setid getHauptadresseID
+        logo = address.getValue("corel_logo")
+    End If
+    Set address = Nothing
+    If Not isNullOrEmtpy(logo) Then
+        logoName = Right(logo, Len(logo) - InStrRev(logo, "\"))
+        doc.ActiveLayer.import getCurrentPath & "\" & logo
+    Else
+        logwarning "importLogo logo not availalbe for idkunde=" & idkunde, SYSTEM_EXCEPTION
+    End If
+    logdebug "importLogo done logo=" & logo & " auftrag=" & idauftrag & " doc=" & doc, SYSTEM_AUDIT
+ex_importLogo:
+    Exit Sub
+err_importLogo:
+    logerror "importLogo logo=" & logo & " auftrag=" & idauftrag & " doc=" & doc, SYSTEM_EXCEPTION
+    Resume ex_importLogo
+End Sub
+    
+Private Sub positionLogo(Optional logoNameNew As String = "")
+    If Not isNullOrEmtpy(logoNameNew) Then
+        logoName = logoNameNew
+    End If
+    If Not isNullOrEmtpy(logoName) Then
+        Dim page As CorelDRAW.page
+        Set page = getDocument.pages.First
+        Dim shape As CorelDRAW.shape
+        For Each shape In page.shapes
+            If shape.name = logoName Then
+                shape.centerx = logoCenterX
+                shape.centery = logoCenterY
+            End If
+        Next
+    End If
+    logdebug "positionLogo done auftrag=" & idauftrag & " doc=" & doc, SYSTEM_AUDIT
+End Sub
+
+Public Sub setUnit(unit As Long)
+    corel.Application.unit = unit
+End Sub
+
+Public Sub openByDocName(name As String)
+On Error GoTo err_openByDocName
+    docname = name
+    Set corel = New CorelDRAW.Application
+    corel.Optimization = True
+    loginfo "openByDocName docname=" & name & " major=" & corel.VersionMajor & " minor=" & corel.VersionMinor & " build=" & corel.VersionBuild, SYSTEM_AUDIT
+    Set doc = corel.OpenDocument(docname)
+ex_openByDocName:
+    Exit Sub
+err_openByDocName:
+    logerror "openByDocument docname=" & docname & " " & err.description, SYSTEM_EXCEPTION
+    Resume ex_openByDocName
+End Sub
+
+
+Private Sub openCorel(Optional cql As Boolean = False)
+On Error GoTo err_openCorel
+    Dim auftrag As New CAuftrag
+    auftrag.setIdAuftrag idauftrag
+    
+    If corel Is Nothing Or doc Is Nothing Then
+        Set corel = New CorelDRAW.Application
+        loginfo "openCorel major=" & corel.VersionMajor & " minor=" & corel.VersionMinor & " build=" & corel.VersionBuild, SYSTEM_AUDIT
+        Dim file As New CDatei
+        If file.exists(originalDocName) Then
+            Set doc = corel.OpenDocument(originalDocName)
+        Else
+            MsgBox getText(252) & vbCrLf & originalDocName, vbInformation
+            Exit Sub
+        End If
+    End If
+    getNrOfPages
+    processPages doc, cql
+ex_openCorel:
+    closeCorel
+    Set auftrag = Nothing
+    Exit Sub
+err_openCorel:
+    logerror "openCorel orginalDocName=" & originalDocName, SYSTEM_EXCEPTION
+    Resume ex_openCorel
+End Sub
+
+Private Sub getNrOfPages()
+    Dim i As Integer
+    For Each page In doc.pages
+        i = i + 1
+    Next
+    nrOfPages = i
+End Sub
+
+
+Public Sub closeCorel()
+On Error GoTo err_closeCorel
+
+    If Not isNullOrEmtpy(MyCStr(docname)) Then
+        doc.SaveAsCopy docname
+    Else
+        doc.save
+    End If
+    doc.Close
+    
+    If Not doc Is Nothing Then
+        Set doc = Nothing
+    End If
+    
+    If Not corel Is Nothing Then
+        corel.Quit
+    End If
+    
+    If Not corel Is Nothing Then
+        Set corel = Nothing
+    End If
+    loginfo "closeCorel docname=" & docname, SYSTEM_AUDIT
+ex_closeCorel:
+    Exit Sub
+err_closeCorel:
+    logerror "closeCorel docname=" & docname, SYSTEM_EXCEPTION
+    Resume ex_closeCorel
+End Sub
+
+Private Sub closeWithoutSaveCorel()
+    doc.Close
+    Set doc = Nothing
+    Set corel = Nothing
+End Sub
+
+Private Sub processPages(doc As CorelDRAW.Document, Optional cql As Boolean = False)
+ On Error GoTo err_processPages
+    loginfo "processPages started idauftrag=" & idauftrag & " src_doc=" & doc.name & " dst_doc=" & getFileName(docname), SYSTEM_AUDIT
+    
+    'logo handling
+    If processLogo Then
+        initLogoPosition
+        importLogo
+        positionLogo
+    End If
+    
+    Dim page As CorelDRAW.page
+    For Each page In doc.pages
+        initPath page
+        setCurrentPageName page.name
+        If cql Then
+            processShapesWithCQL page
+            processNKEWithCQL page
+        Else
+            processShapes page
+        End If
+        DoEvents
+    Next
+    loginfo "processPages finished idauftrag=" & idauftrag & " src_doc=" & doc.name & " dst_doc=" & getFileName(docname), SYSTEM_AUDIT
+ex_processPages:
+    Exit Sub
+err_processPages:
+    logerror "processPages doc=" & doc & " auftrag=" & idauftrag & " page=" & page.name, SYSTEM_EXCEPTION
+    Resume ex_processPages
+End Sub
+
+Sub processShapes(ByRef page As CorelDRAW.page)
+On Error GoTo err_processShapes
+    Dim shape As CorelDRAW.shape
+    For Each shape In page.shapes
+        changeText shape
+        DoEvents
+    Next
+ex_processShapes:
+    Exit Sub
+err_processShapes:
+    logerror "processShapes doc=" & doc & " auftrage=" & idauftrag & " page=" & page.name, SYSTEM_EXCEPTION
+    Resume ex_processShapes
+End Sub
+
+Sub processShapesWithCQL(ByRef page As CorelDRAW.page)
+On Error GoTo err_processShapesWithCQL
+    Dim shapes As New CorelDRAW.ShapeRange
+    Set shapes = page.shapes.FindShapes(Query:="@type='text:artistic' and @com.text.story.text.contains('#')")
+    Dim shape As CorelDRAW.shape
+    For Each shape In shapes
+        printText shape
+        DoEvents
+    Next
+ex_processShapesWithCQL:
+    Exit Sub
+err_processShapesWithCQL:
+    logerror "processShapes doc=" & doc & " auftrage=" & idauftrag & " page=" & page.name, SYSTEM_EXCEPTION
+    Resume ex_processShapesWithCQL
+End Sub
+
+Public Function getShapesWithCQL(ByRef page As CorelDRAW.page, storytext As String)
+On Error GoTo err_getShapesWithCQL
+    Set getShapesWithCQL = page.shapes.FindShapes(Query:="@type='text:artistic' and @com.text.story.text.startswith('" & storytext & "')")
+ex_getShapesWithCQL:
+    Exit Function
+err_getShapesWithCQL:
+    logerror "getShapesWithCQL doc=" & doc & " auftrage=" & idauftrag & " page=" & page.name, SYSTEM_EXCEPTION
+    Resume ex_getShapesWithCQL
+End Function
+
+Public Function getShapesByCQL(ByRef page As CorelDRAW.page, cql As String)
+On Error GoTo err_getShapesByCQL
+    Set getShapesByCQL = page.shapes.FindShapes(Query:=cql)
+ex_getShapesByCQL:
+    Exit Function
+err_getShapesByCQL:
+    logerror "getShapesByCQL doc=" & doc & " auftrage=" & idauftrag & " page=" & page.name, SYSTEM_EXCEPTION
+    Resume ex_getShapesByCQL
+End Function
+
+Function getContentFromShapeByRegex(ByRef page As CorelDRAW.page, searchPattern As String)
+On Error GoTo err_searchShapeByContent
+    Dim shape As CorelDRAW.shape
+    Dim re As New RegExp
+    re.pattern = searchPattern
+    For Each shape In page.shapes
+        If re.test(shape.text.Story.text) Then
+            getContentFromShapeByRegex = shape.text.Story.text
+        End If
+        DoEvents
+    Next
+    getContentFromShapeByRegex = "NotFound"
+ex_searchShapeByContent:
+    Exit Function
+err_searchShapeByContent:
+    logerror "searchShapeByContent doc=" & doc & " auftrage=" & idauftrag & " page=" & page.name, SYSTEM_EXCEPTION
+    Resume ex_searchShapeByContent
+End Function
+
+Public Sub printTextShapePosition(Optional text As String = "")
+    Set corel = New CorelDRAW.Application
+    loginfo "printTextShapePosition major=" & corel.VersionMajor & " minor=" & corel.VersionMinor & " build=" & corel.VersionBuild, SYSTEM_AUDIT
+    Set doc = corel.OpenDocument(docname)
+    Dim shape As CorelDRAW.shape
+    doc.ReferencePoint = cdrBottomRight
+    For Each page In doc.pages
+        For Each shape In page.shapes
+            If shape.Type = cdrTextShape Then
+                Dim posX As Double
+                Dim posY As Double
+                shape.GetPosition posX, posY
+                If text <> "" And shape.text.Story.text = text Then
+                    Debug.Print "filtered: " & shape.text.Story.text & _
+                                " positionX: x=" & shape.PositionX & ", positionY=" & shape.PositionY & _
+                                " BottomY=" & shape.BottomY & " TopY=" & shape.TopY
+                End If
+                If text = "" Then
+                    Debug.Print shape.text.Story.text & " position: x=" & posX & ", y=" & posY
+                End If
+            End If
+            
+        Next
+    Next
+    'closeCorel
+End Sub
+
+Public Sub ungroupGroupedShape()
+On Error GoTo err_ungroupGroupedShape
+    If corel Is Nothing Then
+        Set corel = New CorelDRAW.Application
+    End If
+    If doc Is Nothing And originalDocName <> "" Then
+        Set doc = corel.OpenDocument(originalDocName)
+    End If
+    loginfo "ungroupGroupedShape major=" & corel.VersionMajor & " minor=" & corel.VersionMinor & " build=" & corel.VersionBuild, SYSTEM_AUDIT
+    Dim shape As CorelDRAW.shape
+    For Each page In doc.pages
+        page.shapes.All.UngroupAll
+        'For Each shape In getShapesByCQL(page, "@com.layer.isDesktopLayer=FALSE")
+        ''For Each shape In page.shapes.FindShapes(Query:="@com.type='" & cdrGroupShape & "'")
+        '    'Debug.Print shape.Type
+        '    Select Case shape.Type
+        '        Case cdrGroupShape
+        '            Debug.Print "type=" & shape.Type & " name=" & shape.name
+        '            'shape.UngroupAll
+        '
+        '    End Select
+        'Next
+    Next
+    'closeCorel
+ex_ungroupGroupedShape:
+    Exit Sub
+err_ungroupGroupedShape:
+    logerror "ungroupGroupedShape doc=" & doc & " page=" & page.name & " shape=" & shape.name, SYSTEM_EXCEPTION
+    Resume Next
+End Sub
+
+Public Sub ungroupGroupedShapeOnPage(page As CorelDRAW.page)
+On Error GoTo err_ungroupGroupedShapeOnPage
+    If corel Is Nothing Then
+        Set corel = New CorelDRAW.Application
+    End If
+    If doc Is Nothing And originalDocName <> "" Then
+        Set doc = corel.OpenDocument(originalDocName)
+    End If
+    loginfo "ungroupGroupedShapeOnPage major=" & corel.VersionMajor & " minor=" & corel.VersionMinor & " build=" & corel.VersionBuild, SYSTEM_AUDIT
+    page.shapes.All.UngroupAll
+    'Dim shape As CorelDRAW.shape
+    'For Each shape In getShapesByCQL(page, "@com.layer.isDesktopLayer=FALSE")
+    '    Select Case shape.Type
+    '        Case cdrGroupShape
+    '            shape.UngroupAll
+    '    End Select
+    'Next
+ex_ungroupGroupedShapeOnPage:
+    Exit Sub
+err_ungroupGroupedShapeOnPage:
+    logerror "ungroupGroupedShapeOnPage doc=" & doc & " page=" & page.name, SYSTEM_EXCEPTION
+    Resume ex_ungroupGroupedShapeOnPage
+End Sub
+
+Public Sub revertToShape()
+On Error GoTo err_revertToShape
+    If corel Is Nothing Or doc Is Nothing Then
+        Set corel = New CorelDRAW.Application
+        Set doc = corel.OpenDocument(originalDocName)
+    End If
+    loginfo "revertToShape major=" & corel.VersionMajor & " minor=" & corel.VersionMinor & " build=" & corel.VersionBuild, SYSTEM_AUDIT
+    Dim shape As CorelDRAW.shape
+    For Each page In doc.pages
+        For Each shape In page.shapes
+        'For Each shape In page.shapes.FindShapes(Query:="@com.type='" & cdrSymbolShape & "'")
+            Select Case shape.Type
+                Case cdrSymbolShape
+                    shape.Symbol.RevertToShapes
+            End Select
+        Next
+    Next
+    'closeCorel
+ex_revertToShape:
+    Exit Sub
+err_revertToShape:
+    logerror "revertToShape doc=" & doc & " page=" & page.name & " shape=" & shape.name, SYSTEM_EXCEPTION
+    Resume ex_revertToShape
+End Sub
+
+Public Sub printShapePositionByName(Optional name As String = "")
+    Set corel = New CorelDRAW.Application
+    loginfo "printShapePositionByName major=" & corel.VersionMajor & " minor=" & corel.VersionMinor & " build=" & corel.VersionBuild, SYSTEM_AUDIT
+    Set doc = corel.OpenDocument(docname)
+    Dim shape As CorelDRAW.shape
+    doc.ReferencePoint = cdrBottomRight
+    For Each page In doc.pages
+        For Each shape In page.shapes
+            'If shape.Type = cdrTextShape Then
+                Dim posX As Double
+                Dim posY As Double
+                shape.GetPosition posX, posY
+                If name <> "" And shape.name = name Then
+                    Debug.Print "filtered: " & shape.name & _
+                                " positionX: x=" & shape.PositionX & ", positionY=" & shape.PositionY & _
+                                " BottomY=" & shape.BottomY & " TopY=" & shape.TopY
+                End If
+                If name = "" And shape.name <> "" Then
+                    Debug.Print shape.name & " position: x=" & posX & ", y=" & posY
+                End If
+            'End If
+            
+        Next
+    Next
+    'closeCorel
+End Sub
+
+Public Sub initShapePositionByNameRegex(Optional name As String = "")
+    If isNullOrEmtpy(name) Then
+        name = getSysValue("corel_pfad_identifikation")
+    End If
+    Set corel = New CorelDRAW.Application
+    loginfo "initShapePositionByNameRegex major=" & corel.VersionMajor & " minor=" & corel.VersionMinor & " build=" & corel.VersionBuild, SYSTEM_AUDIT
+    Set doc = corel.OpenDocument(docname)
+    Dim shape As CorelDRAW.shape
+    doc.ReferencePoint = cdrBottomRight
+    For Each page In doc.pages
+        For Each shape In page.shapes
+            Dim posX As Double
+            Dim posY As Double
+            shape.GetPosition posX, posY
+            If name <> "" And InStr(shape.name, name) > 0 Then
+                Debug.Print "filtered: " & shape.name & _
+                            " positionX: x=" & shape.PositionX & ", positionY=" & shape.PositionY & _
+                            " BottomY=" & shape.BottomY & " TopY=" & shape.TopY
+            End If
+        Next
+    Next
+    'closeCorel
+End Sub
+
+Sub printText(ByRef shape As CorelDRAW.shape)
+On Error GoTo err_printText
+    'If IsObject(shape) And Not IsNull(text) And Not shape.text Is Nothing Then
+    If shape.Type = cdrTextShape Then
+        'Debug.Print shape.Text.Story.Text
+        Dim col As Variant
+        For Each col In getPlaceholder(shape.text.Story.text)
+            'Debug.Print col
+            changeTextWithCorelMapping shape, shape.text.Story.text, MyCStr(col)
+            DoEvents
+        Next
+    End If
+exit_printText:
+    Exit Sub
+err_printText:
+    logerror "could not printText, shape=" & shape.text.Story.text, SYSTEM_EXCEPTION
+    Resume exit_printText
+End Sub
+
+Sub changeText(ByRef shape As CorelDRAW.shape)
+On Error GoTo err_changeText
+    'If IsObject(shape) And Not IsNull(text) And Not shape.text Is Nothing Then
+    If shape.Type = cdrTextShape Then
+        'Debug.Print shape.Text.Story.Text
+        Dim col As Variant
+        For Each col In getPlaceholder(shape.text.Story.text)
+            'Debug.Print col
+            changeTextWithCorelMapping shape, shape.text.Story.text, MyCStr(col)
+            DoEvents
+        Next
+    End If
+exit_changeText:
+    Exit Sub
+err_changeText:
+    logerror "could not changeText, shape=" & shape.text.Story.text, SYSTEM_EXCEPTION
+    Resume exit_changeText
+End Sub
+
+Sub changeTextWithCorelMapping(ByRef shape As CorelDRAW.shape, msg As String, placeholder As String)
+On Error GoTo err_changeTextWithCorelMapping
+    If shape.Type = cdrTextShape Then
+        Dim text As String
+        If Not isSpecialPlaceholder(placeholder) Then
+            Dim id As String
+            id = getColValue("tbl_g_corelmapping", "[idvalue]", "idcorelplaceholder='" & placeholder & "'")
+            Dim sql As String
+            sql = getColValue("tbl_g_corelmapping", "[sql]", "idcorelplaceholder='" & placeholder & "'")
+            If id = "idauftrag" Then
+                sql = sql & idauftrag
+            ElseIf id = "idofferte" Then
+                sql = sql & idofferte
+            End If
+            text = getValFromSQL(sql, , "ERR_ON_MAPPING")
+            'loginfo "sql=" & sql, DEBUG_KJOFF
+            logdebug placeholder & "=" & text, DEBUG_KJOFF
+        Else
+            text = processSpecialPlaceholder(placeholder, shape)
+        End If
+        'If text <> "" Then
+            shape.text.Story.WideText = Replace(shape.text.Story.WideText, placeholder, text)
+        'Else
+        '    'shape.text.Story.WideText = ""
+        'End If
+        Dim col As Variant
+    End If
+exit_changeTextWithCorelMapping:
+    Exit Sub
+err_changeTextWithCorelMapping:
+    logerror "could not changeTextWithCorelMapping, placeholder=" & placeholder & " auftrag=" & idauftrag & " page=" & page.name, SYSTEM_EXCEPTION
+    Resume exit_changeTextWithCorelMapping
+End Sub
+
+Public Function getPlaceholder(inputstr As String, Optional pattern As String = "#[a-z|A-Z|0-9|\-|\.|_]+#")
+    Dim col As New collection
+    Dim regex As New RegExp
+    
+    regex.Global = True
+    regex.IgnoreCase = True
+    regex.pattern = pattern
+    Dim matchAll As Object
+    Set matchAll = regex.Execute(inputstr)
+    Dim match As Variant
+    For Each match In matchAll
+        col.add match
+    Next
+    Set getPlaceholder = col
+End Function
+
+Private Function isSpecialPlaceholder(placeholder As String)
+    Dim myconf As New mydef
+    Dim value As Variant
+    For Each value In myconf.corelSpecialPlaceholder
+        If value = placeholder Then
+            isSpecialPlaceholder = True
+            Exit Function
+        End If
+    Next
+    isSpecialPlaceholder = False
+End Function
+
+Public Function formatPageNumber(pageNumber)
+On Error GoTo err_formatPageNumber
+    formatPageNumber = format$(pageNumber, pageformat)
+exit_formatPageNumber:
+    Exit Function
+err_formatPageNumber:
+    logerror "formatPageNumber doc" & doc & " auftrag=" & idauftrag & " page=" & page, SYSTEM_EXCEPTION
+    formatPageNumber = "ERR"
+    Resume exit_formatPageNumber
+End Function
+
+Private Function processSpecialPlaceholder(placeholder As String, ByRef shape As CorelDRAW.shape)
+On Error GoTo err_processSpecialPlaceholder
+    If placeholder = "#START#" Then
+        Dim drahtnummer As New CDrahtnummer
+        processSpecialPlaceholder = Replace(implode(drahtnummer.getDrahtnummern(CLng(idofferte)), vbCrLf & vbCrLf), ":", "                  ")
+        Set drahtnummer = Nothing
+        GoTo exit_processSpecialPlaceholder
+    End If
+    If placeholder = "#AS#" Then
+        processSpecialPlaceholder = formatPageNumber(currentPageNumber)
+        GoTo exit_processSpecialPlaceholder
+    End If
+    If placeholder = "#VS#" Then
+        processSpecialPlaceholder = formatPageNumber(previousPageNumber)
+        GoTo exit_processSpecialPlaceholder
+    End If
+    If placeholder = "#NS#" Then
+        processSpecialPlaceholder = formatPageNumber(nextPageNumber)
+        GoTo exit_processSpecialPlaceholder
+    End If
+    If placeholder = "#S.DATUM#" Or placeholder = "#DATUM#" Then
+        processSpecialPlaceholder = Date
+        GoTo exit_processSpecialPlaceholder
+    End If
+    If placeholder = "#SCHEMAVERSION#" Or placeholder = "#Version#" Then
+        processSpecialPlaceholder = version
+        GoTo exit_processSpecialPlaceholder
+    End If
+    If placeholder = "#INDEX#" Then
+        processSpecialPlaceholder = version
+        GoTo exit_processSpecialPlaceholder
+    End If
+    If placeholder = "#DISPO_VERSION#" Or placeholder = "#VERSION#" Then
+        Dim auftrag As New CAuftrag
+        auftrag.setIdAuftrag idauftrag
+        processSpecialPlaceholder = auftrag.getValue("auftragsnummer") & "_" & version
+        Set auftrag = Nothing
+        GoTo exit_processSpecialPlaceholder
+    End If
+    
+    '#FP# = 00F0 = Seite 0 und Pfad 0
+    '       01F0 = Seite 1 und Pfad 0
+    '       02F1 = Seite 2 und Pfad 1
+    
+    Dim regex As New RegExp
+    regex.pattern = "#([A-Z])P#"
+    
+    If regex.test(placeholder) Then
+        Dim matches As Variant
+        Set matches = regex.Execute(placeholder)
+        processSpecialPlaceholder = formatPageNumber(currentPageNumber) & matches.item(0).SubMatches.item(0) & getPathPosition(shape)
+        GoTo exit_processSpecialPlaceholder
+    End If
+    
+    
+    'If placeholder = "#FP#" Then
+    '    processSpecialPlaceholder = formatPageNumber(currentPageNumber) & "F" & getPathPosition(shape)
+    '    GoTo exit_processSpecialPlaceholder
+    'End If
+    'If placeholder = "#XP#" Then
+    '    processSpecialPlaceholder = formatPageNumber(currentPageNumber) & "X" & getPathPosition(shape)
+    '    GoTo exit_processSpecialPlaceholder
+    'End If
+    'If placeholder = "#QP#" Then
+    '    processSpecialPlaceholder = formatPageNumber(currentPageNumber) & "Q" & getPathPosition(shape)
+    '    GoTo exit_processSpecialPlaceholder
+    'End If
+    'If placeholder = "#KP#" Then
+    '    processSpecialPlaceholder = formatPageNumber(currentPageNumber) & "K" & getPathPosition(shape)
+    '    GoTo exit_processSpecialPlaceholder
+    'End If
+    'If placeholder = "#PP#" Then
+    '    processSpecialPlaceholder = formatPageNumber(currentPageNumber) & "P" & getPathPosition(shape)
+    '    GoTo exit_processSpecialPlaceholder
+    'End If
+    'If placeholder = "#HP#" Then
+    '    processSpecialPlaceholder = formatPageNumber(currentPageNumber) & "H" & getPathPosition(shape)
+    '    GoTo exit_processSpecialPlaceholder
+    'End If
+    'If placeholder = "#SP#" Then
+    '    processSpecialPlaceholder = formatPageNumber(currentPageNumber) & "S" & getPathPosition(shape)
+    '    GoTo exit_processSpecialPlaceholder
+    'End If
+    'If placeholder = "#UP#" Then
+    '    processSpecialPlaceholder = formatPageNumber(currentPageNumber) & "U" & getPathPosition(shape)
+    '    GoTo exit_processSpecialPlaceholder
+    'End If
+    'If placeholder = "#TP#" Then
+    '    processSpecialPlaceholder = formatPageNumber(currentPageNumber) & "T" & getPathPosition(shape)
+    '    GoTo exit_processSpecialPlaceholder
+    'End If
+    'If placeholder = "#NP#" Then
+    '    processSpecialPlaceholder = formatPageNumber(currentPageNumber) & "N" & getPathPosition(shape)
+    '    GoTo exit_processSpecialPlaceholder
+    'End If
+    'If placeholder = "#AP#" Then
+    '    processSpecialPlaceholder = formatPageNumber(currentPageNumber) & "A" & getPathPosition(shape)
+    '    GoTo exit_processSpecialPlaceholder
+    'End If
+    'If placeholder = "#BP#" Then
+    '    processSpecialPlaceholder = formatPageNumber(currentPageNumber) & "B" & getPathPosition(shape)
+    '    GoTo exit_processSpecialPlaceholder
+    'End If
+    processSpecialPlaceholder = "N/A"
+exit_processSpecialPlaceholder:
+    Exit Function
+err_processSpecialPlaceholder:
+    logerror "processSpecialPlaceholder placeholder=" & placeholder & " auftrag=" & idauftrag & " doc=" & doc, SYSTEM_EXCEPTION, False
+    processSpecialPlaceholder = "ERR"
+    Resume exit_processSpecialPlaceholder
+End Function
+
+Public Function getPathPosition(ByRef shape As CorelDRAW.shape)
+On Error GoTo err_getPathPosition
+    
+    'Dim X As Double
+    'Dim Y As Double
+    'shape.GetPosition X, Y
+    'Debug.Print shape.name & ": " & X & " x " & Y
+    
+    Dim col As New collection
+    If colPath Is Nothing Then
+        initPath getFirstPage
+    End If
+    Set col = SortCollection(colPath)
+    Dim path As Variant
+    Dim posOld As Double
+    Dim shapePosX As Double
+    Dim pathPosX0 As Double
+    Dim pathPosX1 As Double
+    posOld = 0
+    For Each path In col
+        'middle of the shape
+        shapePosX = shape.PositionX + (shape.SizeWidth / 2)
+        'path position, X0=left, X1=right
+        pathPosX0 = path.posX
+        pathPosX1 = path.posX + path.width
+        If shapePosX > pathPosX0 And _
+           shapePosX <= pathPosX1 Then
+              getPathPosition = Replace(path.name, getSysValue("corel_pfad_identifikation"), "")
+              Exit Function
+        End If
+        posOld = path.posX
+    Next
+    
+    getPathPosition = "N/A"
+exit_getPathPosition:
+    Exit Function
+err_getPathPosition:
+    'MsgBox getErrorMessage(err)
+    logerror "getPathPosition path=" & path.name & " shape=" & shape.text.Story.text, SYSTEM_EXCEPTION
+    getPathPosition = "ERR"
+    Resume exit_getPathPosition
+End Function
+
+Public Sub publishToPDF(Optional keyword As String = "")
+On Error GoTo err_publishToPDF
+    If corel Is Nothing Then
+        Set corel = New CorelDRAW.Application
+        loginfo "publishToPDF major=" & corel.VersionMajor & " minor=" & corel.VersionMinor & " build=" & corel.VersionBuild, SYSTEM_AUDIT
+    End If
+    
+    Dim file As New CDatei
+    
+    'If doc Is Nothing And (Not isNullOrEmtpy(docname) And file.exists(docname)) Then
+    If doc Is Nothing And Not isNullOrEmtpy(docname) Then
+        Set doc = corel.OpenDocument(docname)
+    End If
+    With doc.PDFSettings
+        .author = MyCStr(getFirmeninfo)
+        .Bookmarks = True
+        .ColorMode = pdfNative
+        .ComplexFillsAsBitmaps = False
+        .CompressText = True
+        .CropMarks = False
+        .DownsampleGray = False
+        .EmbedBaseFonts = True
+        .EmbedFonts = True
+        .FileInformation = False
+        .Hyperlinks = True
+        .Keywords = keyword
+        .Linearize = True
+        .pdfVersion = pdfVersion13
+        .PublishRange = pdfPageRange
+        .PageRange = "1-99"
+        .TrueTypeToType1 = True
+        .PrintPermissions = 1
+        .PermissionPassword = getSysValue("pdf_permission_password")
+        .ContentCopyingAllowed = False
+    End With
+    doc.publishToPDF Replace(Replace(docname, ".cdr", ".pdf"), ".des", ".pdf")
+ex_publishToPDF:
+    closeCorel
+    Exit Sub
+err_publishToPDF:
+    logerror "publishToPDF docname=" & docname & " err=" & getErrorMessage(err), SYSTEM_EXCEPTION
+    Resume ex_publishToPDF
+End Sub
+
+Public Sub printShapePosition(shape As CorelDRAW.shape)
+    
+End Sub
+
+
+Public Function hasSchraubklemme(page As CorelDRAW.page, path As CorelDRAW.shape, shapeKlemmenerkennung As CorelDRAW.shape)
+    Dim schraubklemme As Boolean
+    schraubklemme = False
+    Dim shapes As CorelDRAW.ShapeRange
+    Set shapes = getShapesByCQL(page, "@type='rectangle' " & _
+                                      "and @com.layer.isDesktopLayer=FALSE " & _
+                                      "and @com.centerX >= " & path.LeftX & " " & _
+                                      "and @com.centerX <= " & (path.LeftX + path.SizeWidth) & " " & _
+                                      "and @com.centerY >= " & shapeKlemmenerkennung.BottomY & " " & _
+                                      "and @com.centerY <= " & (shapeKlemmenerkennung.BottomY + shapeKlemmenerkennung.SizeHeight) & " " & _
+                                      "and @com.sizewidth <= 0.05 and @com.sizeheight <= 0.02 and @com.rotationangle <> 0 and @com.rotationangle <> 360")
+    Dim shape As Variant
+    For Each shape In shapes
+        'Debug.Print "schruabklemme > page=" & page.name & " path=" & path.name & " " & shape.rotationangle & " name=" & shape.name&; " type=" & shape.Type
+        If shape.rotationangle <> 0 And shape.rotationangle <> 360 Then
+            schraubklemme = True
+            Exit For
+        End If
+    Next
+    hasSchraubklemme = schraubklemme
+End Function
+
+Public Function hasKlemme(page As CorelDRAW.page, path As CorelDRAW.shape, shapeKlemmenerkennung As CorelDRAW.shape)
+    Dim klemme As Boolean
+    klemme = False
+    Dim shapes As CorelDRAW.ShapeRange
+    Set shapes = getShapesByCQL(page, "@type='rectangle' " & _
+                                      "and @com.layer.isDesktopLayer=FALSE " & _
+                                      "and @com.centerX >= " & path.LeftX & " " & _
+                                      "and @com.centerX <= " & (path.LeftX + path.SizeWidth) & " " & _
+                                      "and @com.centerY >= " & shapeKlemmenerkennung.BottomY & " " & _
+                                      "and @com.centerY <= " & (shapeKlemmenerkennung.BottomY + shapeKlemmenerkennung.SizeHeight) & " " & _
+                                      "and @com.sizewidth <= 0.05 and @com.sizeheight <= 0.015 and (@com.rotationangle = 0 or @com.rotationangle = 360)")
+    Dim shape As Variant
+    For Each shape In shapes
+        'Debug.Print "klemme > page=" & page.name & " path=" & path.name & " " & shape.rotationangle & " name=" & shape.name & " type=" & shape.Type
+        If shape.rotationangle = 0 Or shape.rotationangle = 360 Then
+            klemme = True
+            Exit For
+        End If
+    Next
+    hasKlemme = klemme
+End Function
+
+Public Function getShapeFromPathByObjectAndText(ByRef shapes As CorelDRAW.ShapeRange, ByRef shape As CorelDRAW.shape)
+    Dim din As Variant
+    'which path position
+    'Debug.Print "getShapeFromPathByObjectAndText " & shape.text.Story.text & "=" & getPathPosition(shape)
+    Dim shapePosition As Integer
+    shapePosition = getPathPosition(shape)
+    For Each din In shapes
+        Dim dinShape As CorelDRAW.shape
+        Set dinShape = din
+        Dim dinPosition As Integer
+        dinPosition = getPathPosition(dinShape)
+        If dinPosition = shapePosition Then
+            'Debug.Print dinShape.text.Story.text & "=" & dinPosition & " shape=" & shape.text.Story.text
+            Set getShapeFromPathByObjectAndText = dinShape
+            Exit Function
+        End If
+    Next
+    Set getShapeFromPathByObjectAndText = Nothing
+End Function
+
+Public Function getBiggerSizeFromShape(ByRef shape As CorelDRAW.shape)
+    Dim length As Double
+    If shape.SizeHeight > shape.SizeWidth Then
+        length = shape.SizeHeight
+    Else
+        length = shape.SizeWidth
+    End If
+    getBiggerSizeFromShape = length
+End Function
+
+Public Function getUnitareaFromShape(ByRef shape As CorelDRAW.shape)
+    'Debug.Print "getUnitareaFromShape: " & shape.SizeHeight & "x" & shape.SizeWidth
+    getUnitareaFromShape = shape.SizeHeight * shape.SizeWidth
+End Function
+
+
+Public Sub loopThroughAllGroupedObjects(ByRef groupshape As CorelDRAW.shape, ByRef shapeCollection As collection)
+    Dim shape As Variant
+    Dim artikelnummer As String
+    Dim artikel As New CArtikel
+    For Each shape In groupshape.shapes
+        Dim groupshape2 As New CorelDRAW.shape
+        Set groupshape2 = shape
+        If shape.shapes.count > 1 Then
+            addToCollection groupshape2, shapeCollection
+            loopThroughAllGroupedObjects groupshape2, shapeCollection
+        Else
+            addToCollection groupshape2, shapeCollection
+        End If
+    Next
+End Sub
+
+Public Sub addToCollection(ByRef shape As CorelDRAW.shape, ByRef shapeCollection As collection)
+    Dim artikelnummer As String
+    Dim artikel As New CArtikel
+    If Not isNullOrEmtpy(shape.name) Then
+        If InStr(shape.name, "=") > 0 Or shape.ObjectData("Comments") <> "" Then
+            artikelnummer = Split(shape.name, "=")(1)
+            artikel.setIdByArtikelnummer artikelnummer, False, True
+            'Debug.Print shape.name & " artikel=" & artikel.getValue("artikel") & " BxH=" & shape.sizewidth & "=" & shape.sizeheight
+            shapeCollection.add shape
+        End If
+    End If
+    Set artikel = Nothing
+End Sub
+
+Public Function isVertical(shape As CorelDRAW.shape)
+    If shape.SizeHeight > shape.SizeWidth Then
+        isVertical = True
+    Else
+        isVertical = False
+    End If
+End Function
+
+
+Public Function isHorizontal(shape As CorelDRAW.shape)
+    If shape.SizeHeight < shape.SizeWidth Then
+        isHorizontal = True
+    Else
+        isHorizontal = False
+    End If
+End Function
+
+Public Sub resizeShape(shape1 As CorelDRAW.shape, shape2 As CorelDRAW.shape)
+    Dim ratio1 As Double
+    Dim ratio2 As Double
+    ratio1 = shape1.SizeHeight / shape1.SizeWidth
+    ratio2 = shape2.SizeHeight / shape2.SizeWidth
+    Dim ratio As Double
+    ratio = ratio1 * ratio2
+    shape1.SizeHeight = shape2.SizeHeight
+    shape1.SizeWidth = shape2.SizeWidth
+End Sub
+
+Private Sub processNKEWithCQL(page As CorelDRAW.page)
+On Error GoTo err_processNKEWithCQL
+    Dim shapes As New CorelDRAW.ShapeRange
+    Set shapes = page.shapes.FindShapes(Query:="@name.contains('#NKE#')")
+    Dim shape As CorelDRAW.shape
+    For Each shape In shapes
+        processNKE page, shape
+        DoEvents
+    Next
+ex_processNKEWithCQL:
+    Exit Sub
+err_processNKEWithCQL:
+    logerror "processNKEWithCQL doc=" & doc & " auftrage=" & idauftrag & " page=" & page.name, SYSTEM_EXCEPTION
+    Resume ex_processNKEWithCQL
+    
+End Sub
+
+
+Private Sub processNKE(page As CorelDRAW.page, shape As CorelDRAW.shape)
+On Error GoTo err_processNKE
+    Dim artikel As CArtikel
+    Dim artikelnummer As String
+    Dim auftrag As New CAuftrag
+    auftrag.setIdAuftrag idauftrag
+    Dim auftragsnummer As String
+    auftragsnummer = auftrag.getValue("auftragsnummer")
+    Dim nkepic As String
+    nkepic = getSchlusspapierePath(auftragsnummer) & auftragsnummer & "_Legende_NKE.pdf"
+    Set auftrag = Nothing
+    
+    'check if picture NKE exists, if not create it
+    Dim file As New CDatei
+    file.setFilename nkepic
+    If Not file.exist Then
+        Dim drahtnummer As New CDrahtnummer
+        drahtnummer.createImage auftragsnummer
+        Set drahtnummer = Nothing
+    End If
+    Set file = Nothing
+    
+    'Dim OrigSelection As CorelDraw.ShapeRange
+    'Set OrigSelection = ActiveSelectionRange
+    Dim impopt As CorelDRAW.StructImportOptions
+    Set impopt = CreateStructImportOptions
+    
+    With impopt
+        '.Mode = cdrImportFull
+        .MaintainLayers = True
+        With .ColorConversionOptions
+            .SourceColorProfileList = "sRGB IEC61966-2.1,ISO Coated v2 (ECI),Dot Gain 50%"
+            .TargetColorProfileList = "sRGB IEC61966-2.1,ISO Coated v2 (ECI),Dot Gain 50%"
+        End With
+        '.ResampleHeight shape.SizeHeight
+    End With
+    Dim impflt As ImportFilter
+    Set impflt = page.ActiveLayer.ImportEx(nkepic, cdrAI9, impopt)
+    impflt.Finish
+    Dim s1 As CorelDRAW.shape
+    Set s1 = ActiveShape
+    
+    If isHorizontal(shape) Then
+        s1.rotate 90#
+    End If
+    
+    resizeShape s1, shape
+    
+    ActiveDocument.CreateShapeRangeFromArray(shape, s1).AlignAndDistribute 3, 3, 0, 0, False, 2
+    shape.delete
+    Set s1 = Nothing
+    
+ex_processNKE:
+    'corel.closeCorel
+    'Set corel = Nothing
+    Exit Sub
+err_processNKE:
+    logerror "processNKE page=" & page.name & " shape=" & shape.name, SYSTEM_EXCEPTION
+    Resume ex_processNKE
+End Sub
+
+
+Public Function getPaths()
+    Dim paths As CorelDRAW.ShapeRange
+    Set paths = corel.getShapesByCQL(getFirstPage, "@type='rectangle' " & _
+                                                         "and @name.startswith('" & getSysValue("corel_pfad_identifikation") & "') " & _
+                                                         "and @com.layer.isDesktopLayer=TRUE")
+    Set getPaths = paths
+End Function
+
+Public Function getPath(page As CorelDRAW.page, i As Integer)
+    Dim path As New CorelDRAW.ShapeRange
+    Set path = getShapesByCQL(page, "@type='rectangle' " & _
+                                    "and @name.startswith('" & getSysValue("corel_pfad_identifikation") & i & "') " & _
+                                    "and @com.layer.isDesktopLayer=TRUE")
+    Set getPath = path
+End Function
+
+Public Function getLegende(page As CorelDRAW.page)
+    Set getLegende = page.shapes.FindShapes(Query:="@com.Name='" & getSysValue("corel_legende_identifikation") & "' and @com.layer.isDesktopLayer=TRUE")
+End Function
+
+Public Sub processLegendReferences()
+On Error GoTo err_processLegendReferences
+    loginfo "processLegendReferences docname=" & docname, SYSTEM_AUDIT
+    Dim page As CorelDRAW.page
+    Dim shape As CorelDRAW.shape
+    Dim shapeCollection As New collection
+    'corel.openByDocName "E:\Aufträge\188834_Elektro-Mischabel_Group_AG_Avalua_Treuhand_AG_HV_SBR_Almatec-110mm\Arbeitspapiere\Schema.des"
+    setUnit cdrMillimeter
+    Dim shapes As CorelDRAW.ShapeRange
+    Dim key As Integer
+    key = 0
+    For Each page In getPages
+        Dim corelpage As New CorelDRAW.page
+        Set corelpage = page
+        Set shapes = getShapesByCQL(corelpage, "@type='text:artistic' " & _
+                                               "and @com.text.story.text.contains('%') and @com.text.story.text.contains('.')" & _
+                                               "and @com.layer.isDesktopLayer=FALSE")
+        For Each shape In shapes
+            key = key + 1
+            Dim shapeCorel As New CorelDRAW.shape
+            Set shapeCorel = shape
+            If shape.name <> "ign" Then
+                Set shapeCorel = shape
+                If shape.shapes.count > 1 Then
+                    shapeCollection.add shapeCorel, CStr(key)
+                    addToCollection shapeCorel, shapeCollection
+                Else
+                    shapeCollection.add shapeCorel, CStr(key)
+                End If
+            End If
+            Set shape = Nothing
+        Next
+        Set shapes = Nothing
+    Next
+    'dumpCollection shapeCollection
+    For Each shape In shapeCollection
+        Set shapeCorel = shape
+        Dim legendReferenz As New CLegendeReferenz
+        Dim matches As Variant
+        Set matches = legendReferenz.parseInfoFromLegendeWithRegex(shapeCorel.text.Story.text)
+        Dim match As Variant
+        For Each match In matches
+            Dim ref As String
+            Dim value As String
+            ref = match.SubMatches(1)
+            value = match.SubMatches(0)
+            Dim pagenr As Integer
+            Dim pathnr As Integer
+            pagenr = getStringByRegex(ref, "%0?([^\.]+)\.[0-9]{1}%")
+            pathnr = getStringByRegex(ref, "%0?[^\.]+\.([0-9]{1})%")
+            Dim pages As New CorelDRAW.pages
+            Set pages = getPages
+            Set page = pages.item(CLng(pagenr) + 1)
+            Dim shapeNew As New shape
+            Set shapeNew = page.DesktopLayer.CreateArtisticText(1, 4, value, , , , 6, , , , cdrCenterAlignment)
+            Dim path As CorelDRAW.ShapeRange
+            Set path = getPath(getFirstPage, CInt(pathnr))
+            Debug.Print "leftx=" & path.LeftX & " bottomy=" & path.BottomY
+            shapeNew.LeftX = path.LeftX + (path.SizeWidth / 2) - (shapeNew.SizeWidth / 2)
+            Dim legend As CorelDRAW.ShapeRange
+            Set legend = getLegende(getFirstPage)
+            shapeNew.BottomY = legend.BottomY + legend.SizeHeight - shapeNew.SizeHeight
+            Debug.Print page.name & " value=" & value & " pagenr=" & pagenr & " pathnr=" & pathnr
+            
+            ' uninitilize
+            Set shapeNew = Nothing
+            Set legend = Nothing
+            Set path = Nothing
+            Set page = Nothing
+            Set pages = Nothing
+        Next
+    Next
+    
+    'delete references
+    For Each page In getPages
+        Set corelpage = page
+        Set shapes = getShapesByCQL(corelpage, "@type='text:artistic' " & _
+                                               "and @com.text.story.text.contains('%')" & _
+                                               "and @com.layer.isDesktopLayer=FALSE")
+        For Each shape In shapes
+            shape.text.Story.text = legendReferenz.replaceInfoFromeLegendWithRegex(shape.text.Story.text, "")
+        Next
+    Next
+ex_processLegendReferences:
+    Exit Sub
+err_processLegendReferences:
+    logerror "processLegendReferences docname=" & docname, SYSTEM_EXCEPTION
+    Resume ex_processLegendReferences
+End Sub
+
+Public Function getNameFromShape(ByRef shape As CorelDRAW.shape)
+    On Error GoTo err_getNameFromShape
+    getNameFromShape = shape.name
+ex_getNameFromShape:
+    Exit Function
+err_getNameFromShape:
+    getNameFromShape = ""
+    Resume ex_getNameFromShape
+End Function
+
+Public Function getTextFromShape(ByRef shape As CorelDRAW.shape)
+    On Error GoTo err_getTextFromShape
+    getTextFromShape = Replace(Replace(Trim(shape.text.Story.text), Chr(10), ""), Chr(13), "")
+ex_getTextFromShape:
+    Exit Function
+err_getTextFromShape:
+    getTextFromShape = ""
+    Resume ex_getTextFromShape
+End Function
+
+Public Sub processReferences()
+On Error GoTo err_processReferences
+    loginfo "processReferences docname=" & docname, SYSTEM_AUDIT
+    Dim page As CorelDRAW.page
+    Dim shape As CorelDRAW.shape
+    Dim shapeCollection As New collection
+    'corel.setUnit (cdrMillimeter)
+    Dim shapes As CorelDRAW.ShapeRange
+    Dim shapeCorel As New CorelDRAW.shape
+    Dim shapeCorel2 As New CorelDRAW.shape
+    Dim key As Integer
+    key = 0
+    For Each page In getPages
+        Dim corelpage As New CorelDRAW.page
+        Set corelpage = page
+        ' get all shapes with '%' in name or text wihtouht containing a '.'
+        ' e.g /%RTS1%, %S1%, %RPS1%
+        Set shapes = getShapesByCQL(corelpage, "(@type='text:artistic' and not @com.text.story.text.Contains('.')" & _
+                                               "and (@com.text.story.text.Contains('%') or @name.Contains('%'))) " & _
+                                               "or (not @type='text' and @name.contains('%'))" & _
+                                               "and @com.layer.isDesktopLayer=FALSE")
+        For Each shape In shapes
+            key = key + 1
+            Set shapeCorel = shape
+            If shape.name <> "ign" Then
+                Set shapeCorel = shape
+                If shape.shapes.count > 1 Then
+                    shapeCollection.add shapeCorel, CStr(key)
+                    addToCollection shapeCorel, shapeCollection
+                Else
+                    shapeCollection.add shapeCorel, CStr(key)
+                End If
+            End If
+            Set shape = Nothing
+        Next
+        Set shapes = Nothing
+    Next
+    
+    'loop through the values
+    For Each shape In shapeCollection
+        Set shapeCorel = shape
+        Dim refName As String
+        Dim refType As String
+        Dim refValue As String
+        Dim corelName As String
+        Dim corelText As String
+        corelName = getNameFromShape(shapeCorel)
+        corelText = getTextFromShape(shapeCorel)
+        If InStr(corelName, "%R") > 0 Or InStr(corelText, "%R") > 0 Then
+            ' get all references %RP or %RT
+            ' get value to the according Reference (position or text)
+            ' extract the value from %RPS1% => refName = S1
+            ' text
+            If shapeCorel.Type = cdrTextShape Then
+                If InStr(corelText, "%R") > 0 Then
+                    refName = getStringByRegex(corelText, "%R[TP]{1}([A-Za-z0-9-]+)%")
+                    ' T for text, P for position
+                    refType = getStringByRegex(corelText, "%R([TP]{1})[A-Za-z0-9-]+%")
+                End If
+                ' text in name
+                If InStr(corelName, "%R") > 0 Then
+                    refName = getStringByRegex(corelName, "%R[TP]{1}([A-Za-z0-9-]+)%")
+                    ' T for text, P for position
+                    refType = getStringByRegex(corelName, "%R([TP]{1})[A-Za-z0-9-]+%")
+                End If
+            End If
+            
+            ' no text type => information is only in the name of the shape
+            If shapeCorel.Type <> cdrTextShape Then
+                If InStr(corelName, "%R") > 0 Then
+                    refName = getStringByRegex(corelName, "%R[TP]{1}([A-Za-z0-9-]+)%")
+                    ' T for text, P for position
+                    refType = getStringByRegex(corelName, "%R([TP]{1})[A-Za-z0-9-]+%")
+                End If
+            End If
+            
+            ' get placeholder from refShape
+            Dim refShape As CorelDRAW.shape
+            Set refShape = shapeCorel
+            Dim shape2 As Variant
+            For Each shape2 In shapeCollection
+                Set shapeCorel2 = shape2
+                corelName = getNameFromShape(shapeCorel2)
+                corelText = getTextFromShape(shapeCorel2)
+                If Not InStr(corelName, "%R") > 0 And Not InStr(corelText, "%R") Then
+                    Dim placeholderName As String
+                    Dim placeholderText As String
+                    placeholderName = getStringByRegex(corelName, "%([A-Za-z0-9-]+)%")
+                    placeholderText = getStringByRegex(corelText, "%([A-Za-z0-9-]+)%")
+                    If refName = placeholderName Or refName = placeholderText Then
+                        Dim rex As New RegExp
+                        Dim pattern As String
+                        If refType = "T" Then
+                            pattern = "([A-Za-z0-9-]+)"
+                            rex.pattern = pattern
+                            refShape.text.Story.text = rex.Replace(refShape.text.Story.text, corelText)
+                        End If
+                        If refType = "P" Then
+                            pattern = "(%[A-Za-z0-9-]+%)"
+                            rex.pattern = pattern
+                            refShape.text.Story.text = rex.Replace(refShape.text.Story.text, formatPageNumber(getStringByRegex(shapeCorel2.page.name, pagePattern) - 1) & "." & getPathPosition(shapeCorel2))
+                        End If
+                        Exit For
+                    End If
+                End If
+            Next
+            Set refShape = Nothing
+        End If
+            
+    Next
+    
+    ' if refShape is not found replace it with '--'
+    Dim rexp As New RegExp
+    For Each page In getPages
+        Set corelpage = page
+        Set shapes = getShapesByCQL(corelpage, "@type='text:artistic' and not @com.text.story.text.Contains('.') " & _
+                                               "and @com.text.story.text.Contains('%') " & _
+                                               "and @com.layer.isDesktopLayer=FALSE")
+        For Each shape In shapes
+            rexp.pattern = "(%[A-Za-z0-9-]+%)"
+            Set shapeCorel = shape
+            shapeCorel.text.Story.text = rexp.Replace(shapeCorel.text.Story.text, "--")
+        Next
+    Next
+
+ex_processReferences:
+    Exit Sub
+err_processReferences:
+    logerror "processReferences docname=" & docname, SYSTEM_EXCEPTION
+    Resume ex_processReferences
+End Sub
+
+Public Function getNextPageNumber()
+    getNextPageNumber = nextPageNumber
+End Function
+
+Public Function getPreviousPageNumber()
+    getPreviousPageNumber = previousPageNumber
+End Function
+
+
+
+
