@@ -1,0 +1,1752 @@
+Option Compare Database
+Option Explicit
+'------------------------------------------------------
+' author:       Christian Lochmatter
+'
+' class:        CSchlusspapier
+'
+' description:  represents Schlusspapier class
+'
+'------------------------------------------------------
+
+'Public idschlusspapier As Integer
+Public id As Long
+Public table As String
+Public tableTemplate As String
+Public idstr As String
+Private exist As Boolean
+Private PDFSuccessfullyCreated As Boolean
+Private ReportSuccessfullyCreated As Boolean
+Private mydl As Object
+
+Private Sub class_initialize()
+    Set mydl = rm_getDLNew()
+    'idschlusspapier = 0
+    PDFSuccessfullyCreated = False
+    ReportSuccessfullyCreated = False
+    tableTemplate = "tbl_g_schlusspapier"
+    table = "tbl_o_schlusspapier"
+    idstr = "id"
+End Sub
+
+Public Sub setid(idschlusspapier As Long)
+    If exist Then
+        Set mydl = Nothing
+        Set mydl = rm_getDLNew()
+    End If
+    id = idschlusspapier
+    If exists Then
+        getValues
+    End If
+End Sub
+
+Private Function exists()
+    If id > 0 Then
+        Dim sql As String
+        sql = "SELECT * FROM " & table & " WHERE " & idstr & "=" & id
+        mydl.GetRecordset sql
+        If mydl.recordCount = 1 Then
+            exist = True
+            exists = exist
+            Exit Function
+        Else
+            exist = False
+            exists = exist
+            Exit Function
+        End If
+    End If
+    exists = False
+End Function
+
+Private Function refresh()
+    exists
+End Function
+
+Public Sub getValues()
+    
+End Sub
+
+Public Function getValue(col As String)
+    getValue = mydl.fieldValue(col)
+End Function
+
+Public Function getTemplateValue(col As String, Optional idschlusspapier As Integer = 0)
+    If idschlusspapier = 0 Then
+        idschlusspapier = getValue("idschlusspapier")
+    End If
+    getTemplateValue = getColValue(tableTemplate, col, "idschlusspapier=" & idschlusspapier)
+End Function
+
+Public Function getTemplateValueById(id As Integer, col As String)
+    getTemplateValueById = getColValue(tableTemplate, col, "idschlusspapier=" & id)
+End Function
+
+
+Public Function createActivatedPDF(auftragsnummer As String, idofferte As Long, Optional position As String = "")
+    Dim frm As New Form
+    Set frm = getFormObjectNew("frm_progress", False)
+    Dim ids As Variant
+    ids = getArrayFromSQL("SELECT " & idstr & " FROM " & table & " WHERE aktiviert=TRUE AND idofferte=" & idofferte & " ORDER BY [order]")
+    Dim idschlusspapier As Variant
+    Dim i As Integer
+    i = 1
+    For Each idschlusspapier In ids
+        setid CLng(idschlusspapier)
+        
+        checkConfiguredUser auftragsnummer
+                
+        ' check if version checkbox is selected
+        ' and if it is selected if a version is set
+        If getValue("versionisieren") And getValue("version") = "" Then
+            MsgBox getText(281), vbInformation
+            createActivatedPDF = True
+            closeForm "frm_progress"
+            Set frm = Nothing
+            Exit Function
+        End If
+        
+        frm.reportname.caption = MyCStr(getValue("report"))
+        frm.nrofreports.caption = "Schlusspapier " & i & " von " & arrayLength(ids) & " am Erstellen"
+        i = i + 1
+        createPDF auftragsnummer, , , , MyCStr(position)
+    Next
+    closeForm "frm_progress"
+    Set frm = Nothing
+    createActivatedPDF = False
+End Function
+
+Public Sub checkConfiguredUser(auftragsnummer As String)
+            ' check if on dispo and schema is the same person for dispo and schema set as which is generating the schlusspapier
+        ' if this is not set, ask the user what he want to do
+        Dim auftrag As New CAuftrag
+        Dim idauftrag As Integer
+        Dim offerte As New COfferte
+        offerte.setIdByOffertNummer auftragsnummer
+        idauftrag = CInt(offerte.getValue("idauftrag"))
+        auftrag.setIdAuftrag idauftrag
+        Dim hauptadresse As Integer
+        hauptadresse = CInt(getSysValue("hauptadresse"))
+        
+        ' Schema
+        
+        If getValue("report") = "Schema" Then
+            Dim idadresse_elektroschema As Integer
+            idadresse_elektroschema = CInt(auftrag.getValue("idadresse_elektroschema"))
+            If hauptadresse = idadresse_elektroschema Then
+                Dim idperson_elektroschema As Integer
+                idperson_elektroschema = CInt(auftrag.getValue("idperson_elektroschema"))
+                If getSystemBenutzer <> idperson_elektroschema Then
+                    ' the user is no equal the set idperson -> ask if to change
+                    If MsgBox(getText(283), vbYesNo) = vbYes Then
+                        ' change idperson for elektroschema
+                        setColValue auftrag.table, "idperson_elektroschema=" & getSystemBenutzer, "WHERE idauftrag=" & idauftrag
+                    End If
+                End If
+            End If
+        End If
+        
+        ' DISPO
+        If getValue("report") = "DISPO" Then
+            Dim idadresse_dispo As Integer
+            idadresse_dispo = CInt(auftrag.getValue("idadresse_dispo"))
+            If hauptadresse = idadresse_dispo Then
+                Dim idperson_dispo As Integer
+                idperson_dispo = CInt(auftrag.getValue("idperson_dispo"))
+                If getSystemBenutzer <> idperson_dispo Then
+                    ' the user is no equal the set idperson -> ask if to change
+                    If MsgBox(getText(282), vbYesNo) = vbYes Then
+                        ' change idperson for elektroschema
+                        setColValue auftrag.table, "idperson_dispo=" & getSystemBenutzer, "WHERE idauftrag=" & idauftrag
+                    End If
+                End If
+                        
+            End If
+        End If
+                
+        Set auftrag = Nothing
+        Set offerte = Nothing
+
+End Sub
+
+Public Sub printActivatedPDF(auftragsnummer As String, idofferte As Long, Optional position As String = "")
+    Dim ids As Variant
+    ids = getArrayFromSQL("SELECT " & idstr & " " & _
+                          "FROM " & table & " " & _
+                          "WHERE aktiviert=TRUE " & _
+                          "AND idofferte=" & idofferte & " " & _
+                          "ORDER BY [order]")
+    Dim idschlusspapier As Variant
+    For Each idschlusspapier In ids
+        setid CLng(idschlusspapier)
+        printSchlusspapier MyCStr(position)
+    Next
+End Sub
+
+Public Sub createPDF(auftragsnummer As String, _
+                     Optional versionletter As String = "", _
+                     Optional corelOrExcelDateiname As String = "", _
+                     Optional schlusspapiertyp As String = "", _
+                     Optional position As String = "")
+On Error GoTo err_createPDF
+    checkConfiguredUser auftragsnummer
+    
+    Dim reportname As String
+    reportname = getValue("schlusspapier")
+    
+    Dim corel As New CCorel
+    Dim page As CorelDRAW.page
+    
+    Dim reporttype As String
+    reporttype = getValue("typ")
+    
+    Dim reportdescription As String
+    reportdescription = getValue("report")
+    
+    Dim idart As Integer
+    idart = MyCInt(getTemplateValue("idart"))
+    
+    Dim basepath As String
+    basepath = getAuftragsPath(auftragsnummer)
+    
+    Dim verObj As New CVersion
+    Dim version As String
+    Dim previousVersion As String
+    version = getValue("version")
+    
+    Dim laufnummerversion As Boolean
+    laufnummerversion = getValue("laufnummer")
+    Dim laufnummer As Integer
+    
+    Dim values As Variant
+    Dim datei As New CDatei
+    Dim dateiEndung As String
+    Dim overwrite As Boolean
+    overwrite = False
+    Dim versionDateiName As String
+    Dim i As Integer
+    Dim schlusspapierpfad As String
+    Dim xlsTemplate As String
+        
+    Dim auftrag As New CAuftrag
+    Dim idauftrag As Integer
+    idauftrag = auftrag.getIdByAuftragsnummer(auftragsnummer)
+    auftrag.setIdAuftrag idauftrag
+    
+        
+    Dim schlusspapier As New CDatei
+    
+    'versionisierung ja oder nein
+    Dim versionisierung As Boolean
+    versionisierung = CBool(getValue("versionisieren"))
+    If versionisierung And isNullOrEmtpy(versionletter) Then
+        Dim verArtObj As New CVersionArt
+        previousVersion = verObj.getLatestVersionByAuftragsnummer(CLng(auftragsnummer), _
+                                                                  verArtObj.getVersionArtByName(reportdescription))
+        Set verArtObj = Nothing
+    End If
+    
+    Dim ver As New CVersion
+    
+    
+    ' ------
+    ' ACCESS Bericht
+    ' ------
+        
+    If reporttype = "ACCESS_BERICHT" Then
+        
+        
+        'schlusspapier.existDocument (reportname)
+        versionDateiName = getAuftragsPath(auftragsnummer) & _
+                           "\" & getSysValue("auftrag_subdir_schlusspapiere") & "\" & verObj.getVersionName(auftragsnummer, _
+                                                 Replace(reportdescription, " ", "_"), _
+                                                 "pdf", _
+                                                 version, _
+                                                 , _
+                                                 position)
+        
+        schlusspapier.setFilename versionDateiName
+        overwrite = False
+        
+        If version <> "prov" And schlusspapier.exists Then
+            If MsgBox(getText(213), vbYesNo) = vbYes Then
+                overwrite = True
+            End If
+        Else
+            overwrite = True
+        End If
+        
+        DoCmd.OpenReport reportname, acViewPreview
+        
+        If overwrite Then
+            writePDF reportname, versionDateiName
+        End If
+        
+        DoCmd.Close acReport, reportname, acSaveYes
+    End If
+    
+    ' ------
+    ' EXCEL Datei
+    ' ------
+    If reporttype = "EXCEL" Then
+        Dim nenndaten As New CNenndaten
+        Dim offerte As New COfferte
+        offerte.setIdByOffertNummer auftragsnummer
+        Dim idofferte As Integer
+        idofferte = offerte.getValue("idofferte")
+        nenndaten.setidByOffertId idofferte
+
+        
+        Dim vorsicherung As String
+        If isNullOrEmtpy(nenndaten.getValue("vorsicherung_produktname")) Then
+            vorsicherung = "_ohne"
+        Else
+            vorsicherung = "_mit"
+        End If
+        
+        Dim xlsdateiname As String
+        Dim xlsdateinameNeu As String
+        xlsdateiname = getCurrentPath & "\" & getSysValue("templatepath") & "\" & Replace(reportname, "_mitohne", vorsicherung)
+        datei.setFilename getCurrentPath & "\" & getSysValue("templatepath") & "\" & reportname
+        dateiEndung = getFileType(xlsdateiname)
+        xlsdateinameNeu = getAuftragsPath(auftragsnummer) & _
+                           "\" & getSysValue("auftrag_subdir_schlusspapiere") & "\" & _
+                           verObj.getVersionName(auftragsnummer, _
+                                                 reportdescription, _
+                                                 dateiEndung, _
+                                                 version, _
+                                                 , _
+                                                 position)
+        
+        
+        'schlusspapier.setFilename versionDateiName
+        overwrite = False
+        
+        If version <> "prov" And schlusspapier.exists Then
+            If MsgBox(getText(213), vbYesNo) = vbYes Then
+                overwrite = True
+            End If
+        Else
+            overwrite = True
+        End If
+        
+        'neue datei erstellen
+        If overwrite Then
+            datei.copy xlsdateiname, xlsdateinameNeu, True
+            
+            'new line für vorsicherung
+            Dim newline As String
+            If InStr(reportname, "Quer") > 0 Then
+                newline = vbCrLf
+            Else
+                newline = " "
+            End If
+            
+            Dim vorgabeauftrag As String
+            If isNullOrEmtpy(offerte.getValue("vorgabeauftrag_alternativ")) Then
+                vorgabeauftrag = getVorgabeauftragById(offerte.getValue("idvorgabeauftrag"))
+            Else
+                vorgabeauftrag = offerte.getValue("vorgabeauftrag_alternativ")
+            End If
+            
+            Dim range As String
+            range = "A1:D20"
+            
+            Dim valuesExcel As New Dictionary
+            valuesExcel("#datum#") = format(Now(), "dd.mm.yyyy")
+            
+            'findAndReplace xlsdateinameNeu, "#datum#", format(Now(), "dd.mm.yyyy"), range
+            
+            'Tableaulegende
+            If idart = 9 Then
+                'findAndReplace xlsdateinameNeu, "#auftragsnummer#", auftragsnummer & "-" & version, range
+                valuesExcel("#auftragsnummer_version#") = MyCStr(auftragsnummer & "-" & version)
+            End If
+            
+            If isNullOrEmtpy(position) Then
+                'findAndReplace xlsdateinameNeu, "#auftragsnummer#", auftragsnummer, range
+                valuesExcel("#auftragsnummer#") = MyCStr(auftragsnummer)
+                'findAndReplace xlsdateinameNeu, "#schemanummer#", auftrag.getValue("schemanr"), range
+                valuesExcel("#schemanummer#") = MyCStr(auftrag.getValue("schemanr"))
+            Else
+                'findAndReplace xlsdateinameNeu, "#auftragsnummer#", auftragsnummer & "-" & position, range
+                valuesExcel("#auftragsnummer#") = MyCStr(auftragsnummer) & "-" & position
+                'findAndReplace xlsdateinameNeu, "#schemanummer#", auftrag.getValue("schemanr") & "-" & position, range
+                valuesExcel("#schemanummer#") = MyCStr(auftrag.getValue("schemanr")) & "-" & position
+            End If
+            
+            
+            'findAndReplace xlsdateinameNeu, "#objekt_kommission#", offerte.getKommissionAnlageDescription, range
+            valuesExcel("#objekt_kommission#") = MyCStr(offerte.getKommissionObjektDescription)
+            'findAndReplace xlsdateinameNeu, "#anlage_position#", offerte.getAnlagePosition, range
+            valuesExcel("#anlage_position#") = MyCStr(offerte.getAnlagePosition)
+            
+            'findAndReplace xlsdateinameNeu, "#produktenorm#", nenndaten.getValue("produktnorm"), range
+            valuesExcel("#produktenorm#") = MyCStr(nenndaten.getValue("produktnorm"))
+            'findAndReplace xlsdateinameNeu, "#nennspannung#", nenndaten.getValue("nennspannung"), range
+            valuesExcel("#nennspannung#") = MyCStr(nenndaten.getValue("nennspannung"))
+            'findAndReplace xlsdateinameNeu, "#nennfrequenz#", nenndaten.getValue("nennfrequenz"), range
+            valuesExcel("#nennfrequenz#") = MyCStr(nenndaten.getValue("nennfrequenz"))
+            'findAndReplace xlsdateinameNeu, "#nennstrom#", nenndaten.getValue("nennstrom"), range
+            valuesExcel("#nennstrom#") = MyCStr(nenndaten.getValue("nennstrom"))
+            'findAndReplace xlsdateinameNeu, "#vorgabeauftrag#", vorgabeauftrag, range
+            valuesExcel("#vorgabeauftrag#") = MyCStr(vorgabeauftrag)
+            'findAndReplace xlsdateinameNeu, "#schutzmassnahme#", nenndaten.getValue("schutzmassnahme"), range
+            valuesExcel("#schutzmassnahme#") = MyCStr(nenndaten.getValue("schutzmassnahme"))
+            'findAndReplace xlsdateinameNeu, "#schutzart#", nenndaten.getValue("schutzart"), range
+            valuesExcel("#schutzart#") = nenndaten.getValue("schutzart")
+            'findAndReplace xlsdateinameNeu, "#basisschutz#", nenndaten.getValue("basisschutz"), range
+            valuesExcel("#basisschutz#") = MyCStr(nenndaten.getValue("basisschutz"))
+            'findAndReplace xlsdateinameNeu, "#kurzschlussfestigkeit#", nenndaten.getValue("kurzschlussstrom_ausgelegt"), range
+            valuesExcel("#kurzschlussfestigkeit#") = MyCStr(nenndaten.getValue("kurzschlussstrom_ausgelegt"))
+            'findAndReplace xlsdateinameNeu, "#bemessungsstossstromfestigkeit#", _
+            '                                getColValue("tbl_g_kurzschlussstrom_bemessungsstromfestigkeit_mapping", _
+            '                                "bemessungsstromfestigkeit", _
+            '                                "kurzschlussstrom='" & nenndaten.getValue("kurzschlussstrom_ausgelegt") & "'"), range
+            valuesExcel("#bemessungsstossstromfestigkeit#") = MyCStr(getColValue("tbl_g_kurzschlussstrom_bemessungsstromfestigkeit_mapping", _
+                                            "bemessungsstromfestigkeit", _
+                                            "kurzschlussstrom='" & nenndaten.getValue("kurzschlussstrom_ausgelegt") & "'"))
+            'findAndReplace xlsdateinameNeu, "#vorsicherung#", nenndaten.getValue("vorsicherung_produktname") & _
+            '                                newline & nenndaten.getValue("nennstrom"), _
+            '                                range
+            valuesExcel("#vorsicherung#") = MyCStr(nenndaten.getValue("vorsicherung_produktname") & _
+                                            newline & nenndaten.getValue("nennstrom"))
+            'findAndReplace xlsdateinameNeu, "#basisnorm#", nenndaten.getValue("basisnorm"), range
+            valuesExcel("#basisnorm#") = MyCStr(nenndaten.getValue("basisnorm"))
+            
+            ' build array with placeholder
+            Dim ph As Variant
+            Dim needles As Variant
+            For Each ph In valuesExcel
+                array_push needles, MyCStr(ph)
+            Next
+            Dim valPlaceholderPosition As Variant
+            valPlaceholderPosition = ex_findCellByNeedle(xlsdateinameNeu, needles, "A1:Z20")
+            
+            ' build excel content
+            
+            
+            '----
+            '            'sort array
+            '    'build mapping
+            '    Dim arrayMapping As New Dictionary
+            '    Dim arrayNew As Variant
+            '    Dim mkey As String
+            '    For Each ph In valPlaceholderPosition
+            '        mkey = Left(ph, 2) & Right(ph, 1)
+            '        mkey = Replace(mkey, "0", "")
+            '        arrayMapping(mkey) = ph
+            '        array_push arrayNew, mkey
+            '    Next
+            '    QuickSort arrayNew
+            '    i = 0
+            '    For Each ph In arrayNew
+            '        Dim vv As Variant
+            '        vv = Split(ph, "=")
+            '        valPlaceholderPosition(i) = Replace(valPlaceholderPosition(i), vv(1), valuesExcel(vv(1)))
+            '        i = i + 1
+            '    Next
+            '----
+            
+            
+            
+            i = 0
+            For Each ph In valPlaceholderPosition
+                Dim v As Variant
+                v = Split(ph, "=")
+                valPlaceholderPosition(i) = Replace(valPlaceholderPosition(i), v(1), valuesExcel(v(1)))
+                i = i + 1
+            Next
+            
+            ' fill values into excel
+            ex_fill xlsdateinameNeu, valPlaceholderPosition, , False, True
+            
+            
+            'Tableau
+            If idart = 9 Then
+                corelOrExcelDateiname = getSchemaFromForm
+                If isNullOrEmtpy(corelOrExcelDateiname) Then
+                    DoCmd.OpenForm "frm_datei_auswahl", , , , , , auftragsnummer
+                    Do Until isLoaded("frm_datei_auswahl") = False
+                        DoEvents
+                    Loop
+                End If
+                
+                Dim xlsformat As String
+                If InStr(xlsdateiname, "a4") > 0 Then
+                    xlsformat = "a4"
+                End If
+                If InStr(xlsdateiname, "a5") > 0 Then
+                    xlsformat = "a5"
+                End If
+                
+                corel.openByDocName getAuftragsPath(auftragsnummer) & "\" & _
+                                    getSysValue("auftrag_subdir_Arbeitspapiere") & "\" & corelOrExcelDateiname
+                corel.ungroupGroupedShape
+                corel.initLegend corel.getFirstPage
+                For Each page In corel.getPages
+                    corel.prepareLegends page, "#FP#"
+                    corel.prepareLegends page, "#QP#"
+                    corel.prepareLegends page, "#TL"
+                Next
+                 
+                ' find start placeholder #START#
+                Dim cellstart As String
+                cellstart = ex_getCell(xlsdateinameNeu, "#START#", "A1:A30")
+                
+                ' sort legend
+                ' 01F1
+                Set corel.legends = sortLegend(corel.legends)
+                
+                ' prepare collection as array
+                If Not corel.legends Is Nothing Then
+                    values = Array()
+                    Dim val As String
+                    Dim legend As CCorelShape
+                    Dim start As Long
+                    start = getNumberByRegex(cellstart, "[0-9]+:([0-9]+)")
+                    For Each legend In corel.legends
+                        val = "A" & start & "=" & legend.formatedMatchingText
+                        values = array_push(values, val)
+                        val = "B" & start & "=" & replace_newline_with_character(legend.text, " ")
+                        values = array_push(values, val)
+                        start = start + 1
+                    Next
+                    ex_fill xlsdateinameNeu, values, , True, True
+                Else
+                    logwarning "no legends #FP#, #QP# or #TL defined", SYSTEM_EXCEPTION
+                End If
+                
+                'process logo to tableaulegende
+                
+                processPictureTableauLegende offerte, xlsdateinameNeu, xlsformat
+                
+                corel.closeCorel
+                Set corel = Nothing
+    
+            End If
+            
+            Set nenndaten = Nothing
+            Set offerte = Nothing
+            Set auftrag = Nothing
+            
+            'writePDF
+            'ex_publishToPDF (xlsdateinameNeu)
+            'excel.ex_publishToPDF (xlsdateinameNeu)
+        End If
+    End If
+    
+    ' ------
+    ' EXCELWORKSHEET Datei
+    ' ------
+    If reporttype = "EXCELWORKSHEET" Then
+        Dim worksheet As String
+        worksheet = getValue("worksheet")
+        If laufnummerversion Then
+            ' use laufnummer from the invoice (teildebitor)
+            Dim teildebitor As New CTeildebitor
+            Dim frm As Form
+            Set frm = getChildForm("frm_offerte", "frm_auftrag_neu")
+            laufnummer = MyCInt(db_getMaxValue(teildebitor.table, "laufnummer", "idauftrag=" & frm.idauftrag), 0)
+            versionDateiName = getSchlusspapierePath(auftragsnummer) & "\" & _
+                               verObj.getLaufnummerName(auftragsnummer, _
+                                                     reportdescription, _
+                                                     "pdf", _
+                                                     laufnummer, _
+                                                     , _
+                                                     position)
+        Else
+            ' use version
+            versionDateiName = basepath & "\" & getSysValue("auftrag_subdir_schlusspapiere") & "\" & _
+                               verObj.getVersionName(auftragsnummer, _
+                                                     reportdescription, _
+                                                     "pdf", _
+                                                     version, _
+                                                     , _
+                                                     position)
+        End If
+        Dim filereport As New CDatei
+        reportname = auftragsnummer & "_" & reportname
+        filereport.setFilename basepath & "\" & getSysValue("auftrag_subdir_arbeitspapiere") & "\" & reportname
+        If Not filereport.exists Then
+            MsgBox getText(269) & " " & reportname, vbInformation
+            PDFSuccessfullyCreated = False
+            Exit Sub
+        Else
+            schlusspapier.setFilename versionDateiName
+            overwrite = False
+            
+            If version <> "prov" And schlusspapier.exists Then
+                If MsgBox(getText(213), vbYesNo) = vbYes Then
+                    overwrite = True
+                    
+                End If
+            Else
+                overwrite = True
+            End If
+            
+            If overwrite Then
+                
+                ' copy the actual xls file (Rechung-ETK.xls) to the Schlusspapier path
+                ' with correct naming convention
+                If reportdescription = "Rechnung" Or reportdescription = "Lieferschein" Then
+                    xlsdateiname = Replace(versionDateiName, ".pdf", ".xls")
+                    filereport.copy basepath & "\" & getSysValue("auftrag_subdir_arbeitspapiere") & "\" & reportname, _
+                                    xlsdateiname, True
+                    
+                    teildebitor.setid CLng(getColValue(teildebitor.table, "TOP 1 idteildebitor", "idauftrag=" & idauftrag & " ORDER BY laufnummer DESC"))
+                    findAndReplace xlsdateiname, _
+                                   "#Rechnungsnummer#", _
+                                   auftragsnummer & "-" & format(teildebitor.getValue("rechnungsnummer"), "0000") & "-" & format(teildebitor.getValue("rechnungsdatum"), "yy"), _
+                                   "A1:C20", _
+                                   worksheet
+                    
+                    ' create pdf
+                    ex_publishToPDF xlsdateiname, _
+                                    versionDateiName, _
+                                    worksheet
+                Else
+                    ' create pdf
+                    ex_publishToPDF basepath & "\" & getSysValue("auftrag_subdir_arbeitspapiere") & "\" & reportname, _
+                                    versionDateiName, _
+                                    worksheet
+                End If
+            
+            End If
+            
+        End If
+    End If
+    
+    ' ------
+    ' COREL Datei
+    ' ------
+    If reporttype = "COREL" Then
+        'auswahl einer datei, falls nicht vorhanden
+        If isNullOrEmtpy(corelOrExcelDateiname) Then
+            Dim frmschlusspapier As New Form
+            Set frmschlusspapier = getChildForm("frm_offerte", "frm_schlusspapier")
+            
+            'dispo
+            If reportname = "DISPO" Then
+                corelOrExcelDateiname = getDispoFromForm
+                If isNullOrEmtpy(corelOrExcelDateiname) Then
+                    DoCmd.OpenForm "frm_datei_auswahl", , , , , , auftragsnummer
+                    Do Until isLoaded("frm_datei_auswahl") = False
+                        DoEvents
+                    Loop
+                End If
+            End If
+            
+            'schema
+            If reportname = "SCHEMA" Then
+                corelOrExcelDateiname = getSchemaFromForm
+                If isNullOrEmtpy(corelOrExcelDateiname) Then
+                    DoCmd.OpenForm "frm_datei_auswahl", , , , , , auftragsnummer
+                    Do Until isLoaded("frm_datei_auswahl") = False
+                        DoEvents
+                    Loop
+                End If
+                'falls schema
+                Dim processLogo As Boolean
+                processLogo = False
+            End If
+            
+        End If
+        
+        'übeprüfgung, ob dokument vorhanden ist und
+        'versionisierung des dokumentes
+        Dim dateiname As String
+        'dateiName = getAuftragsPath(Me.auftragsnummer) & "\" & getSysValue("auftrag_subdir_Arbeitspapiere") & "\" & _
+        '            auftrag.getVersionsArtById(Me.combo_version_art) & ".des"
+        dateiname = getAuftragsPath(auftragsnummer) & "\" & _
+                    getSysValue("auftrag_subdir_Arbeitspapiere") & "\" & _
+                    corelOrExcelDateiname
+        dateiEndung = Right(dateiname, Len(dateiname) - InStrRev(dateiname, "."))
+        datei.setFilename dateiname
+        
+        'existiert schlusspapier bereits?
+        'falls version=prov => überschreiben
+        versionDateiName = getAuftragsPath(auftragsnummer) & _
+                           "\" & getSysValue("auftrag_subdir_schlusspapiere") & "\" & _
+                           verObj.getVersionName(auftragsnummer, _
+                                                 reportdescription, _
+                                                 dateiEndung, _
+                                                 version, _
+                                                 , _
+                                                 position)
+        Set schlusspapier = New CDatei
+        schlusspapier.setFilename versionDateiName
+        
+        overwrite = False
+        If version <> "prov" And schlusspapier.exists Then
+            If MsgBox(getText(213), vbYesNo) = vbYes Then
+                overwrite = True
+            End If
+        Else
+            overwrite = True
+        End If
+        'datei kopieren und unter schlusspapiere ablegen
+                        
+        If overwrite Then
+            'Datei.copy dateiname, versionDateiName, overwrite
+                        
+            'platzhalter ersetzen auf der neuen verionsisierten Datei erstellen
+            'neue version erstellen
+            Dim versionDateiNameShort As String
+            versionDateiNameShort = Right(versionDateiName, Len(versionDateiName) - InStrRev(versionDateiName, "\"))
+            
+            corel.setIdAuftrag auftrag.getIdByAuftragsnummer(auftragsnummer), version, versionDateiNameShort
+            corel.setCoreDocName versionDateiName
+            corel.setOrginalDocName dateiname
+            corel.openByDocName dateiname
+            
+            'DISPO
+            If idart = 1 Then
+                corel.deleteShapeOnDesktop
+            End If
+            
+            'SCHEMA and DISPO
+            If idart = 3 Or idart = 1 Then
+                corel.revertToShape
+                corel.ungroupGroupedShape
+            End If
+            
+            'SCHEMA
+            If idart = 3 Then
+                processLogo = True
+            End If
+            
+            corel.processPlaceholder processLogo, dateiname, versionDateiName, True
+            
+            ' delete or hide not used shapes
+            corel.deleteShapeOnAllPages "#TL"
+            corel.changeOutlineWidthShapeOnAllPagesByName getSysValue("corel_f_identifikation"), 0, "rectangle"
+            
+            ' process legend references
+            corel.processLegendReferences
+            
+            ' process refernces
+            corel.processReferences
+            
+            
+            'pdf erstellen
+            Dim pdfKeyword As String
+            Dim kunde As New CAdresse
+            kunde.setid auftrag.getValue("idadresse")
+            pdfKeyword = auftragsnummer & "," & auftrag.getValue("kommission") & "," & kunde.getValue("firma")
+            corel.publishToPDF pdfKeyword
+        
+        End If
+        Set auftrag = Nothing
+        Set kunde = Nothing
+    
+    End If
+    
+    ' ------
+    ' EXCEL_ETIKETTEN Datei
+    ' ------
+    
+    If reporttype = "EXCEL_ETIKETTEN" Then
+        Dim xlsNew As String
+        schlusspapierpfad = getSchlusspapierePath(auftragsnummer)
+        xlsTemplate = getCurrentPath & "\" & getSysValue("templatepath") & "\" & reportname
+        xlsNew = schlusspapierpfad & "\" & auftragsnummer & "_" & reportname
+        
+        ' source to choose if the Etiketten comes from the SCHEMA
+        ' or the DISPO. This depends on who wrote the SCHEMA
+        Dim sourceEtiketten As String
+        If auftrag.getValue("idadresse_elektroschema") = getHauptadresseID Then
+            sourceEtiketten = "Schema"
+        Else
+            sourceEtiketten = "DISPO"
+        End If
+        
+        schlusspapier.setFilename xlsNew
+        overwrite = False
+        If version <> "prov" And schlusspapier.exists Then
+            If MsgBox(getText(213), vbYesNo) = vbYes Then
+                overwrite = True
+            End If
+        Else
+            overwrite = True
+        End If
+        
+        'neue datei erstellen
+        datei.copy xlsTemplate, xlsNew, overwrite
+        
+        ' get latest version of Schema
+        Dim shape As CorelDRAW.shape
+        Dim file As New CDatei
+        
+        Dim filenameRegex As String
+        Dim files As New CArray
+        
+        If MyCStr(getSchemaForEtiketteFromForm) <> "" Then
+            files.push getSchlusspapierePath(auftragsnummer) & getSchemaForEtiketteFromForm
+            If InStr(getSchemaForEtiketteFromForm, "Schema") > 0 Then
+                sourceEtiketten = "Schema"
+            End If
+            If InStr(getSchemaForEtiketteFromForm, "DISPO") > 0 Then
+                sourceEtiketten = "DISPO"
+            End If
+            
+        Else
+            ' take the latest version
+            filenameRegex = "^" & auftragsnummer & "_" & sourceEtiketten & "_ETK-" & getLatestVersion(CLng(auftragsnummer), 3) & ".des"
+            Set files = file.findFilesByRegex(schlusspapierpfad, filenameRegex)
+        End If
+        
+        If files.size = 1 Then
+            Dim filename As String
+            filename = files.pop
+        Else
+            MsgBox getText(262) & vbCrLf & "Pfad: " & schlusspapierpfad & vbCrLf & "Dateiname: " & filenameRegex, vbInformation
+        End If
+      
+        If sourceEtiketten = "SchemaOld" Then
+        '    ' Etiketten source is SCHEMA -> ETK AG wrote the SCHEMA
+        '        corel.openByDocName filename
+        '        corel.ungroupGroupedShape
+        '
+        '        For Each page In corel.getPages
+        '            'get DINxxx text shapes from the site
+        '            Dim dinShapes As CorelDRAW.ShapeRange
+        '            Set dinShapes = corel.getShapesByCQL(page, "@type='text:artistic' " & _
+        '                                                       "and @com.text.story.text.startswith('DIN')" & _
+        '                                                       "and @com.layer.isDesktopLayer=FALSE")
+        '            For Each shape In corel.getShapesByCQL(page, "@type='text:artistic' " & _
+        '                                                         "and @com.text.story.bold=TRUE " & _
+        '                                                         "and @com.text.Story.font='Arial' " & _
+        '                                                         "and @com.text.Story.size=8 " & _
+        '                                                         "and @com.layer.isDesktopLayer=FALSE")
+        '                Debug.Print page.name & " "; shape.text.Story.text
+        '                Dim dinShape As CorelDRAW.shape
+        '                Set dinShape = corel.getShapeFromPathByObjectAndText(dinShapes, shape)
+        '                Dim nrOfRepetition As Integer
+        '                nrOfRepetition = 1
+        '                If Not dinShape Is Nothing Then
+        '                    Dim dinShapeText As String
+        '                    dinShapeText = getStringByRegex(CStr(dinShape.text.Story.text), "(DIN[0-9]+).*")
+        '
+        '                    Dim dinDefinition As Variant
+        '                    For Each dinDefinition In Split(getSysValue("etikette_din"), ";")
+        '                        Dim dinText As String
+        '                        Dim dinNumber As Integer
+        '                        dinText = Split(dinDefinition, "=")(0)
+        '                        If dinText = dinShapeText Then
+        '                            dinNumber = CInt(Split(dinDefinition, "=")(1))
+        '                            nrOfRepetition = dinNumber
+        '                            'Debug.Print "dinText=" & dinText & " dinNumber=" & dinNumber & " shape=" & shape.text.Story.text
+        '                            Exit For
+        '                        End If
+        '                    Next
+        '                End If
+        '
+        '                If CInt(getNumberByRegex(page.name, ".*([1-9]+)") - 1) = CInt(getNumberByRegex(shape.text.Story.text, "0?([1-9]+)[A-Z]+[1-9]+")) Then
+        '                    For i = 1 To nrOfRepetition Step 1
+        '                        array_push values, replace_newline_with_character(shape.text.Story.text, " ")
+        '                    Next i
+        '                End If
+        '            Next
+        '        Next
+        '        corel.closeCorel
+        '        Set corel = Nothing
+        '
+        '        'sort array
+        '        'build mapping
+        '       Dim arrMapping As New Dictionary
+        '        Dim arrNew As Variant
+        '        Dim a As Variant
+        '        Dim valuesNew As Variant
+        '        Dim key As String
+        '        For Each a In values
+        '            key = Left(a, 2) & Right(a, 2)
+        '            key = Replace(key, "0", "")
+        '            arrMapping(key) = a
+        '            array_push arrNew, key
+        '        Next
+        '        QuickSort arrNew
+        '
+        '        ' build array
+        '        i = 2
+        '        For Each a In arrNew
+        '            array_push valuesNew, "A" & i & "=" & arrMapping(a)
+        '            i = i + 1
+        '        Next
+        '
+        '        ex_fill xlsNew, valuesNew, "LS"
+       '
+       ElseIf sourceEtiketten = "Schema" Then
+        
+            ' Etiketten source is SCHEMA -> ETK AG wrote the SCHEMA
+                corel.openByDocName filename
+                corel.ungroupGroupedShape
+
+                For Each page In corel.getPages
+                    For Each shape In corel.getShapesByCQL(page, "@type='text:artistic' " & _
+                                                                 "and @com.text.story.bold=TRUE " & _
+                                                                 "and @com.text.Story.font='Arial' " & _
+                                                                 "and @com.text.Story.size=8 " & _
+                                                                 "and @com.layer.isDesktopLayer=FALSE")
+                        Debug.Print page.name & " - " & shape.name & " - " & shape.text.Story.text
+                        Dim nrOfRep As Integer
+                        nrOfRep = 1
+                        If InStr(shape.ObjectData("Comments"), "ea=") > 0 Then
+                            nrOfRep = CInt(getNumberByRegex(shape.ObjectData("Comments"), "ea=([^;]+);?"))
+                        End If
+                        
+                        For i = 1 To nrOfRep Step 1
+                            array_push values, replace_newline_with_character(shape.text.Story.text, " ")
+                        Next i
+                        'End If
+                    Next
+                Next
+                corel.closeCorel
+                Set corel = Nothing
+                
+                Dim valuesNew As Variant
+                Dim a As Variant
+                For Each a In values
+                    array_push valuesNew, "A" & i & "=" & a
+                    i = i + 1
+                Next
+                
+                ex_fill xlsNew, valuesNew, "LS"
+                
+                'Dim lastrow As String
+                'lastrow = ex_getLastRow(xlsNew, 1, "")
+                Dim sortrange As String
+                sortrange = "A" & 2 & ":" & "A2048"
+                ex_sort xlsNew, sortrange, Array("A"), "LS", Array(1)
+        
+        
+        ElseIf sourceEtiketten = "DISPO" Then
+            ' Etiketten comes from the DISPO, because ETKAG does not write the SCHEMA
+            corel.openByDocName filename
+            Dim valLS As Variant
+            Dim valRelais As Variant
+            Dim valRelaisSockel As Variant
+            Dim valWagoSPS As Variant
+            Dim shapes As New CorelDRAW.ShapeRange
+            Dim shapesRectangle As New CorelDRAW.ShapeRange
+            Dim txtShape As Variant
+            valLS = Array()
+            valRelais = Array()
+            valRelaisSockel = Array()
+            valWagoSPS = Array()
+            Dim etikettenShapeAvailable As Boolean
+            etikettenShapeAvailable = False
+            i = 2
+            For Each page In corel.getPages
+                
+                'get etiketten shape
+                Dim etiketteShapes As Variant
+                Dim etiketteShape As CorelDRAW.shape
+                Set etiketteShapes = corel.getShapesByCQL(page, "@type='rectangle' " & _
+                                                                "and @name.startswith('" & getSysValue("corel_etiketten_identifikation") & "') " & _
+                                                                "and @com.layer.isDesktopLayer=FALSE")
+                
+                ' check if ther are etiketten available
+                ' if there are no etiketten defined, skip the page
+                Set shapes = New CorelDRAW.ShapeRange
+                If etiketteShapes.count = 0 Then
+                    ' no etiketten frame found -> skip
+                    Set shapes = corel.getShapesByCQL(page, "@type='text:artistic' " & _
+                                                            "and @com.text.story.text.length>0 " & _
+                                                            "and @com.layer.isDesktopLayer=FALSE ")
+                    Set shapes = Nothing
+                Else
+                    ' get only the shapes within the
+                    ' the rectangle named etiketten
+                    For Each etiketteShape In etiketteShapes
+                        Dim shapesRectancleTemp As CorelDRAW.ShapeRange
+                        Set shapesRectancleTemp = corel.getShapesByCQL(page, "@type='rectangle' " & _
+                                                                             "and @fill.color.IsCMYK = true " & _
+                                                                             "and @com.fill.uniformcolor.CMYKYellow>=60 " & _
+                                                                             "and @com.fill.uniformcolor.CMYKYellow<=66 " & _
+                                                                             "and @com.fill.uniformcolor.CMYKCyan=0 " & _
+                                                                             "and @com.fill.uniformcolor.CMYKMagenta=0 " & _
+                                                                             "and @com.fill.uniformcolor.CMYKBlack=0 " & _
+                                                                             "and @com.layer.isDesktopLayer=FALSE " & _
+                                                                             "and @com.centerX >= " & etiketteShape.LeftX & " " & _
+                                                                             "and @com.centerX <= " & etiketteShape.LeftX + etiketteShape.SizeWidth & " " & _
+                                                                             "and @com.centerY >= " & etiketteShape.BottomY & " " & _
+                                                                             "and @com.centerY <= " & etiketteShape.BottomY + etiketteShape.SizeHeight)
+                        'add the shapes to a global list
+                        shapesRectangle.addrange shapesRectancleTemp
+                        'corel.openByDocName filename
+                        corel.ungroupGroupedShapeOnPage page
+                    Next
+                End If
+                
+                
+                loginfo "filename=" & filename & " page=" & page.name & " nrOfRectangleShapes=" & shapesRectangle.count, SYSTEM_AUDIT
+                'todo - check if etiketten rahmen vorhanden sind
+                etikettenShapeAvailable = False
+                If shapesRectangle.count >= 1 Then
+                    etikettenShapeAvailable = True
+                End If
+                
+                If etikettenShapeAvailable Then
+                    etikettenShapeAvailable = True
+                
+                    If Not shapesRectangle Is Nothing Then
+                        'get defined shapes
+                        'Debug.Print "shapes count=" & shapes.count
+                        'Debug.Print "shapesRectangle count=" & shapesRectangle.count
+                        Dim shapescount As Integer
+                        shapescount = 0
+                        For Each shape In shapesRectangle
+                            Set shapes = corel.getShapesByCQL(page, "@type='text:artistic' " & _
+                                                                    "and @com.text.story.text.length>0 " & _
+                                                                    "and @com.layer.isDesktopLayer=FALSE " & _
+                                                                    "and @com.centerX >= " & shape.LeftX & " " & _
+                                                                    "and @com.centerX <= " & shape.LeftX + shape.SizeWidth & " " & _
+                                                                    "and @com.centerY >= " & shape.BottomY & " " & _
+                                                                    "and @com.centerY <= " & shape.BottomY + shape.SizeHeight)
+                            
+                            If shapes.count = 1 Then
+                                shapescount = shapescount + shapes.count
+                            End If
+                            For Each txtShape In shapes
+                                If shape.fill.uniformcolor.CMYKYellow = 60 Then
+                                    array_push valLS, txtShape.text.Story.text
+                                End If
+                                If shape.fill.uniformcolor.CMYKYellow = 64 Then
+                                    array_push valLS, txtShape.text.Story.text
+                                    array_push valLS, txtShape.text.Story.text
+                                End If
+                                If shape.fill.uniformcolor.CMYKYellow = 65 Then
+                                    array_push valLS, txtShape.text.Story.text
+                                    array_push valLS, txtShape.text.Story.text
+                                    array_push valLS, txtShape.text.Story.text
+                                End If
+                                If shape.fill.uniformcolor.CMYKYellow = 66 Then
+                                    array_push valLS, txtShape.text.Story.text
+                                    array_push valLS, txtShape.text.Story.text
+                                    array_push valLS, txtShape.text.Story.text
+                                    array_push valLS, txtShape.text.Story.text
+                                End If
+                                If shape.fill.uniformcolor.CMYKYellow = 61 Then
+                                    array_push valRelais, txtShape.text.Story.text
+                                    array_push valRelaisSockel, txtShape.text.Story.text
+                                End If
+                                'If shape.fill.uniformcolor.CMYKYellow = 62 Then
+                                '    array_push valRelaisSockel, txtShape.text.story.text
+                                'End If
+                                If shape.fill.uniformcolor.CMYKYellow = 63 Then
+                                    array_push valWagoSPS, txtShape.text.Story.text
+                                End If
+                            Next
+                        Next
+                        loginfo "filename=" & filename & " page=" & page.name & " nrOfTextInRectangle=" & shapescount, SYSTEM_AUDIT
+                    End If
+                End If
+            Next
+            
+            'sort array
+            'build mapping
+            valLS = sortEtikettenArray(valLS)
+            valRelais = sortEtikettenArray(valRelais)
+            valRelaisSockel = sortEtikettenArray(valRelaisSockel)
+            valWagoSPS = sortEtikettenArray(valWagoSPS)
+            
+            
+            ' build array
+            If arrayLength(valLS) > 0 Then
+                valuesNew = Array()
+                i = 2
+                For Each a In valLS
+                    array_push valuesNew, "A" & i & "=" & a
+                    i = i + 1
+                Next
+                ex_fill xlsNew, valuesNew, "LS"
+            End If
+            
+            If arrayLength(valRelais) > 0 Then
+                valuesNew = Array()
+                i = 2
+                For Each a In valRelais
+                    array_push valuesNew, "A" & i & "=" & a
+                    i = i + 1
+                Next
+                ex_fill xlsNew, valuesNew, "Relais"
+            End If
+            
+            If arrayLength(valRelaisSockel) > 0 Then
+                valuesNew = Array()
+                i = 2
+                For Each a In valRelaisSockel
+                    array_push valuesNew, "A" & i & "=" & a
+                    i = i + 1
+                Next
+                ex_fill xlsNew, valuesNew, "RelaisSockel"
+            End If
+            
+            If arrayLength(valWagoSPS) > 0 Then
+                valuesNew = Array()
+                i = 2
+                For Each a In valWagoSPS
+                    array_push valuesNew, "A" & i & "=" & a
+                    i = i + 1
+                Next
+                ex_fill xlsNew, valuesNew, "WAGO SPS"
+            End If
+        End If
+    End If
+    
+    ' ------
+    ' EXCEL_KLEMMENBESCHRIFTUNG Datei
+    ' ------
+    
+    If reporttype = "EXCEL_KLEMMENBESCHRIFTUNG" Then
+        overwrite = True
+        Dim xlsKlemmbeschriftung As String
+        schlusspapierpfad = getSchlusspapierePath(auftragsnummer)
+        xlsNew = schlusspapierpfad & auftragsnummer & "_" & reportname
+        Dim j As Integer
+        j = 0
+        
+        xlsTemplate = getCurrentPath & "\" & getSysValue("templatepath") & "\" & reportname
+        datei.copy xlsTemplate, xlsNew
+        schlusspapier.setFilename xlsNew
+        overwrite = False
+        If version <> "prov" And schlusspapier.exists Then
+            If MsgBox(getText(213), vbYesNo) = vbYes Then
+                overwrite = True
+            End If
+        Else
+            overwrite = True
+        End If
+        
+        corel.openByDocName getSchlusspapierePath(auftragsnummer) & getSchemaForEtiketteFromForm
+        corel.ungroupGroupedShape
+        
+        'TODO: get latest Schema, what to do
+        'Dim page As CorelDRAW.page
+        'Dim shapes As Variant
+        'Dim txtShape As Variant
+    
+        'search for klemmenerkennung, klemmengruppennummer and klemmennummer
+        Dim shapeKlemmenerkennung As CorelDRAW.shape
+        Dim shapeKlemmengruppennummer As CorelDRAW.shape
+        Dim shapeKlemmennummer As CorelDRAW.shape
+    
+        Set shapes = corel.getShapeByName(getSysValue("corel_klemmenerkennung_identifikation"), , "TRUE")
+        If shapes.count = 1 Then
+            Set shapeKlemmenerkennung = shapes.item(1)
+        End If
+    
+        Set shapes = Nothing
+        Set shapes = corel.getShapeByName(getSysValue("corel_klemmengruppennummer_identifikation"), , "TRUE")
+        If shapes.count = 1 Then
+            Set shapeKlemmengruppennummer = shapes.item(1)
+        End If
+    
+        Set shapes = Nothing
+        Set shapes = corel.getShapeByName(getSysValue("corel_klemmennummer_identifikation"), , "TRUE")
+        If shapes.count = 1 Then
+            Set shapeKlemmennummer = shapes.item(1)
+        End If
+    
+        If shapeKlemmenerkennung Is Nothing _
+           Or shapeKlemmengruppennummer Is Nothing _
+           Or shapeKlemmennummer Is Nothing Then
+        
+            MsgBox getText(265), vbInformation
+            corel.closeCorel
+            Set corel = Nothing
+            Exit Sub
+        End If
+    
+        ' get paths
+        Dim paths As Variant
+        Set paths = corel.getShapesByCQL(corel.getFirstPage, "@type='rectangle' " & _
+                                                         "and @name.startswith('" & getSysValue("corel_pfad_identifikation") & "') " & _
+                                                         "and @com.layer.isDesktopLayer=TRUE")
+        For Each page In corel.getPages
+            ' loop through each path (pfad)
+            'Dim i As Integer
+            For i = 0 To 9 Step 1
+            
+                ' get associated path for i
+                Dim path As CorelDRAW.shape
+                For Each path In paths
+                    If path.name = getSysValue("corel_pfad_identifikation") & i Then
+                        Exit For
+                    End If
+                Next
+                
+                If corel.hasKlemme(page, path, shapeKlemmenerkennung) Then
+            
+                    ' get klemmenbreite
+                    ' create condition for cql
+                    Dim conditions As Variant
+                    Dim condition As Variant
+                    Dim cqlKlemmenbreiteConditions As Variant
+                    conditions = Split(getSysValue("schema_klemmenbeschriftung_groesse"), ";")
+                    For Each condition In conditions
+                        array_push cqlKlemmenbreiteConditions, "@com.text.story.text.startswith('" & Split(condition, "=")(0) & "')"
+                    Next
+                
+                    Set shapes = corel.getShapesByCQL(page, "@type='text:artistic' " & _
+                                                            "and @com.text.story.text.length>0 " & _
+                                                            "and @com.layer.isDesktopLayer=FALSE " & _
+                                                            "and @com.centerX >= " & path.LeftX & " " & _
+                                                            "and @com.centerX <= " & (path.LeftX + path.SizeWidth) & " " & _
+                                                            "and (" & implode(cqlKlemmenbreiteConditions, " OR ") & ")")
+                
+                    Dim klemmenbreite As String
+                    klemmenbreite = mapKlemmenbreite(getSysValue("schema_klemmenbreite_default"))
+                    If shapes.count = 1 Then
+                        Dim regex As New RegExp
+                        regex.pattern = "(^[0-9,]+mm2).*"
+                        Dim matches As Variant
+                        Set matches = regex.Execute(shapes.item(1).text.Story.text)
+                        klemmenbreite = mapKlemmenbreite(matches(0).SubMatches.item(0))
+                    End If
+                
+                
+                    ' get klemmengruppennummer
+                    Set shapes = Nothing
+                    Set shapes = corel.getShapesByCQL(page, "@type='text:artistic' " & _
+                                                            "and @com.text.story.text.length>0 " & _
+                                                            "and @com.layer.isDesktopLayer=FALSE " & _
+                                                            "and @com.centerX >= " & path.LeftX & " " & _
+                                                            "and @com.centerX <= " & (path.LeftX + path.SizeWidth) & " " & _
+                                                            "and @com.centerY >= " & shapeKlemmengruppennummer.BottomY & " " & _
+                                                            "and @com.centerY <= " & (shapeKlemmengruppennummer.BottomY + shapeKlemmengruppennummer.SizeHeight))
+                
+                    Dim klemmengruppennummer As String
+                    For Each shape In shapes
+                        'Debug.Print page.name & "|" & path.name & "|" & shape.text.Story.text
+                        klemmengruppennummer = shape.text.Story.text
+                    Next
+                
+                    ' get klemmennummer
+                    Set shapes = Nothing
+                    Set shapes = corel.getShapesByCQL(page, "@type='text:artistic' " & _
+                                                            "and @com.text.story.text.length>0 " & _
+                                                            "and @com.text.story.text.length<4 " & _
+                                                            "and @com.layer.isDesktopLayer=FALSE " & _
+                                                            "and @com.centerX >= " & path.LeftX & " " & _
+                                                            "and @com.centerX <= " & (path.LeftX + path.SizeWidth) & " " & _
+                                                            "and @com.centerY >= " & shapeKlemmennummer.BottomY & " " & _
+                                                            "and @com.centerY <= " & (shapeKlemmennummer.BottomY + shapeKlemmennummer.SizeHeight))
+                    'Debug.Print page.name & "|" & path.name
+                
+                    
+                    Dim shapesNew As New CorelDRAW.ShapeRange
+                    Set shapesNew = Nothing
+                    Dim indexDictionary As New Dictionary
+                    For Each shape In shapes
+                        Dim index As String
+                        index = format(shape.centerx, "#.00") & ":" & format(shape.centery, "#.00")
+                        'If isNullOrEmtpy(indexDictionary(index)) and shape.layer.zOrder > Then
+                        indexDictionary(index) = index
+                        shapesNew.add shape
+                        'End If
+                    Next
+                    'Debug.Print page.name & "|" & path.name
+                    Set shapes = shapesNew
+                
+                    ' needs to be sorted from left to right
+                    ' this is base on the CenterX paramater
+                
+                    If shapes.count > 0 Then
+                        Set shapesNew = Nothing
+                        Dim shapesKlemmennummerCenterX As Variant
+                        For Each shape In shapes
+                           array_push shapesKlemmennummerCenterX, shape.centerx
+                        Next
+                        QuickSort shapesKlemmennummerCenterX
+                        Dim centerx As Variant
+                        For Each centerx In shapesKlemmennummerCenterX
+                            For Each shape In shapes
+                                If shape.centerx = centerx Then
+                                    shapesNew.add shape
+                                End If
+                            Next
+                        Next
+                    
+                        ' build array for excel
+                        If j = 0 Then
+                            j = 1
+                        End If
+                        
+                        ' TODO deduplicate
+                        Dim shapeNew2 As CorelDRAW.ShapeRange
+                        Dim shapeDeduplication As New collection
+                        For Each shape In shapesNew
+                            Dim idx As String
+                            idx = format(shape.centerx, "#.00") & ":" & format(shape.centery, "#.00")
+                            If Not keyExists(shapeDeduplication, idx) Then
+                                shapeDeduplication.add shape, idx
+                            Else
+                                ' index already exists, check if zorder is higher
+                                ' if higher take it and replace the shape
+                                Dim existingShape As CorelDRAW.shape
+                                Set existingShape = shapeDeduplication.item(index)
+                                If shape.ZOrder > existingShape.ZOrder Then
+                                    shapeDeduplication.remove idx
+                                    shapeDeduplication.add shape, idx
+                                End If
+                            End If
+                        Next
+                        
+                        ' build new shapesNew based on deduplication
+                        Set shapesNew = Nothing
+                        For Each shape In shapeDeduplication
+                            shapesNew.add shape
+                        Next
+                        
+                        For Each shape In shapesNew
+                            'Debug.Print klemmenbreite & "|" & klemmengruppennummer & "|" & shape.text.Story.text
+                            array_push values, "A" & j & "=" & klemmenbreite
+                            array_push values, "B" & j & "=" & klemmengruppennummer
+                            array_push values, "C" & j & "=" & shape.text.Story.text
+                            'array_push values, "D" & j & "=" & shape.centerx & ":" & shape.centerY & " zorder:" & shape.ZOrder
+                            j = j + 1
+                        Next
+                    End If
+                End If
+            Next
+        Next
+        
+        ' build excel
+        ex_fill xlsNew, values
+    End If
+    
+    ' ------
+    ' MATERIALLISTE Datei + Werkstattliste
+    ' ------
+    
+    If reporttype = "EXCEL_MATERIALLISTE" Then
+        Dim dispofilename As String
+        dispofilename = getDispoForMateriallisteFromForm
+        If isNullOrEmtpy(dispofilename) Then
+            MsgBox getText(277), vbInformation
+            GoTo err_createPDF
+        End If
+        Dim materialiste As New CMaterial
+        ReportSuccessfullyCreated = materialiste.createPDF(getAuftragsPath(auftragsnummer) & "\" & getSysValue("auftrag_subdir_Arbeitspapiere") & "\" & getDispoForMateriallisteFromForm, _
+                                                            auftragsnummer, _
+                                                            reportname, _
+                                                            version, _
+                                                            reportdescription, _
+                                                            position)
+        overwrite = True
+        If Not ReportSuccessfullyCreated Then
+            overwrite = False
+            GoTo err_createPDF
+        End If
+        Set materialiste = Nothing
+    End If
+    
+    ' ------
+    ' WERKSTATTLISTE Datei
+    ' ------
+    If reporttype = "EXCEL_WERKSTATTLISTE" Then
+        Dim idsource As Integer
+        idsource = MyCInt(getTemplateValue("source"))
+        Dim sp As New CSchlusspapier
+        Dim source As String
+        source = ""
+        If idsource > 0 Then
+            source = getTemplateValue("schlusspapier", idsource)
+        End If
+        
+        ' get last materialliste to produce the werkstattliste
+        Dim xlsmaterialliste As String
+        Dim idmaterialliste As Long
+        idmaterialliste = getSchlusspapierIdByName(source)
+        setid idmaterialliste
+        xlsmaterialliste = getSchlusspapier(position)
+                
+        Dim werkstattliste As New CWerkstattliste
+        werkstattliste.createPDFNew xlsmaterialliste, auftragsnummer
+        'MsgBox getText(1000) & vbCrLf & "input: " & vbCrLf & xlsmaterialliste, vbInformation
+        ReportSuccessfullyCreated = True
+        GoTo ex_createPDF
+    End If
+    
+    
+    ' ------
+    ' DRAHTNUMMERN Datei - NKE
+    ' ------
+    
+    If reporttype = "EXCEL_DRAHTNUMMERN" Then
+        Dim offert As New COfferte
+        offert.setIdByOffertNummer auftragsnummer
+        Dim idoffert As Integer
+        idoffert = offert.getValue("idofferte")
+        Dim drahtnummer As New CDrahtnummer
+        overwrite = drahtnummer.createPDF(auftragsnummer, _
+                                          reportname, _
+                                          reportdescription, _
+                                          idoffert)
+        Set materialiste = Nothing
+        Set offert = Nothing
+        Set drahtnummer = Nothing
+    End If
+    
+    ' add remark to version list if versionisieren is enabled was successfull
+    If (versionisierung Or laufnummerversion) And isNullOrEmtpy(versionletter) And overwrite Then
+        ver.addRemark auftragsnummer, id, position, laufnummer
+        Set ver = Nothing
+    End If
+    
+    If overwrite Then
+        PDFSuccessfullyCreated = True
+    End If
+    
+    Set verObj = Nothing
+    ReportSuccessfullyCreated = True
+ex_createPDF:
+    'corel.closeCorel
+    Set corel = Nothing
+    Exit Sub
+err_createPDF:
+    logerror "createPDF auftragsnummer=" & auftragsnummer & " report=" & reportname, SYSTEM_EXCEPTION
+    ReportSuccessfullyCreated = False
+    Resume ex_createPDF
+End Sub
+
+Public Function getSchlusspapierIdByName(schlusspapiername As String)
+    getSchlusspapierIdByName = CLng(getColValue(table, "id", "schlusspapier='" & schlusspapiername & "' " & " AND idofferte=" & getValue("idofferte")))
+End Function
+
+
+Public Sub setIdByReportDescription(reportdescription As String)
+    id = MyCLng(getColValue(table, idstr, "report='" & reportdescription & "'"))
+    setid id
+End Sub
+
+Public Sub updateField(value As String, field As String, condition As String)
+    setColValue table, field & "='" & value & "'", condition, True
+End Sub
+
+Public Sub getArtById()
+    'getArtById = getColValue "tbl_o_aenderungsuebersicht_art",
+End Sub
+
+Public Function deleteSchlusspapier(auftragsnummer As String, _
+                                    position As String, _
+                                    version As String, _
+                                    reportname As String, _
+                                    Optional ending As String = "\.pdf$")
+    
+    Dim path As String
+    path = getSchlusspapierePath(auftragsnummer)
+    
+    Dim files As CArray
+    Dim f As New CDatei
+    Set files = f.findFilesByRegex(path, Replace(auftragsnummer & "-?" & position & "_" & reportname & "_ETK-" & version & ending, " ", "_"))
+    Set f = Nothing
+    
+    Dim file As Variant
+    For Each file In files.getArray
+        Dim fo As New CDatei
+        If MsgBox(getText(238) & vbCrLf & file, vbYesNo) = vbYes Then
+            fo.setFilename MyCStr(file)
+            fo.delete
+        End If
+        Set fo = Nothing
+    Next
+End Function
+
+Public Function getSchlusspapierByRegex(idschlusspapier As Long, _
+                                        auftragsnummer As String, _
+                                        position As String, _
+                                        Optional ending As String = "\.[pdf|xlsx]{3,4}")
+    setid idschlusspapier
+    'Dim versionisieren As Boolean
+    Dim versionisieren As Boolean
+    versionisieren = CBool(getValue("versionisieren"))
+    
+    Dim reportname As String
+    reportname = getValue("report")
+    Dim path As String
+    path = getSchlusspapierePath(auftragsnummer)
+    
+    Dim file As New CDatei
+    Dim files As CArray
+    If versionisieren Then
+        Dim ver As String
+        Dim version As New CVersion
+        Dim art As Integer
+        art = CInt(getColValue("tbl_o_aenderungsuebersicht_art", "idaenderungsuebersichtart", "art='" & getValue("report") & "'"))
+        ver = version.getLatestVersionByAuftragsnummer(CLng(auftragsnummer), art)
+        Set version = Nothing
+        Set files = file.findFilesByRegex(path, Replace(auftragsnummer & "-?" & position & "_" & reportname & "_ETK-" & ver & ending, " ", "_"))
+    Else
+        Set files = file.findFilesByRegex(path, Replace(auftragsnummer & "_" & reportname & "(_ETK)?" & ending, " ", "_"))
+        If files.size > 1 Then
+            MsgBox getText(219), vbInformation
+            Open_Explorer path
+            Exit Function
+        End If
+    End If
+    Set getSchlusspapierByRegex = files
+End Function
+
+Public Sub printSchlusspapier(position As String)
+    Dim printer As String
+    printer = getValue("drucker")
+    
+    Dim filename As String
+    Dim auftragsnummer As String
+    Dim idofferte As Long
+    idofferte = CLng(getValue("idofferte"))
+    Dim offerte As New COfferte
+    offerte.setid idofferte
+    auftragsnummer = offerte.getValue("id")
+    Set offerte = Nothing
+    Dim file As New CDatei
+    Dim files As CArray
+    Dim ending As String
+    ending = getValue("ending")
+    
+    Set files = getSchlusspapierByRegex(id, auftragsnummer, position, ending)
+    
+    If files.size = 0 Then
+        MsgBox getText(236), vbInformation
+    Else
+        If files.size = 1 Then
+            Dim fileToPrint As String
+            fileToPrint = files.pop
+            
+            'check if printer is available on the system
+            If Not isNullOrEmtpy(printer) Then
+                If Not existPrinter(printer) Then
+                    MsgBox getText(237) & printer, vbCritical
+                    logerror "printSchlusspapiere printer=" & printer & " not available", SYSTEM_EXCEPTION
+                    Exit Sub
+                End If
+            End If
+            
+            'if the file is pdf, do not change printer,
+            'this will be done in the SumatraPDFPortable prog
+            Dim cmd As String
+            If file.isPDF(fileToPrint) Then
+                printPDF fileToPrint, printer
+            Else
+                'ShellWaitOnReturn (getCurrentPath & "\bin\SetDefaultPrinter.exe" & " " & printer)
+                
+                ex_printExcel fileToPrint, printer
+                
+                'switchPrinter (printer)
+                'loginfo "change printer printer=" & printer, SYSTEM_AUDIT
+                'cmd = "Shell(0, """"Print"""", filetoPrint, """""", """""", 0)"
+                'ShellExecute 0, "Print", fileToPrint, "", "", 0
+            End If
+            logdebug cmd, SYSTEM_AUDIT
+            loginfo "printer file=" & fileToPrint, SYSTEM_AUDIT
+        End If
+        If files.size > 1 Then
+            MsgBox getText(234), vbInformation
+        End If
+        Set files = Nothing
+    End If
+    
+    'default Drucker zurücksetzen
+    initDefaultPrinter
+    
+End Sub
+
+Public Sub openSchlusspapier(position As String)
+On Error GoTo err_openSchlusspapier
+    Dim filename As String
+    Dim auftragsnummer As String
+    Dim idofferte As Long
+    idofferte = CLng(getValue("idofferte"))
+    Dim offerte As New COfferte
+    offerte.setid idofferte
+    auftragsnummer = offerte.getValue("id")
+    Set offerte = Nothing
+    Dim file As New CDatei
+    Dim files As CArray
+    Dim typ As String
+    typ = getValue("typ")
+    Dim ending As String
+    ending = getValue("ending")
+    
+    Set files = getSchlusspapierByRegex(Me.id, auftragsnummer, MyCStr(position), ending)
+    
+    If files.size = 0 Then
+        MsgBox getText(236), vbInformation
+    Else
+    
+        If typ = "COREL" _
+           Or typ = "ACCESS_BERICHT" _
+           Or typ = "EXCELWORKSHEET" _
+           Or typ = "EXCEL" _
+           Or typ = "EXCEL_ETIKETTEN" _
+           Or typ = "EXCEL_KLEMMENBESCHRIFTUNG" Then
+            If files.size = 1 Then
+                ShellExecute 0, "Open", files.pop, "", "", 1
+            End If
+            If files.size > 1 Then
+                MsgBox getText(234), vbInformation
+            End If
+        End If
+        
+        If typ = "EXCEL" _
+           Or typ = "EXCEL_ETIKETTEN" _
+           Or typ = "EXCEL_MATERIALLISTE" _
+           Or typ = "EXCEL_WERKSTATTLISTE" _
+           Or typ = "EXCEL_DRAHTNUMMERN" Then
+            If files.size = 1 Then
+                ex_openExcel files.pop
+            End If
+            If files.size > 1 Then
+                MsgBox getText(234), vbInformation
+            End If
+        End If
+        
+    End If
+    Set files = Nothing
+ex_openSchlusspapier:
+    Exit Sub
+err_openSchlusspapier:
+    logerror "openSchlusspapier auftragsnummer=" & auftragsnummer & " position=" & position, SYSTEM_EXCEPTION
+    Resume ex_openSchlusspapier
+End Sub
+
+Public Function getSchlusspapier(position As String)
+On Error GoTo err_getSchlusspapier
+    Dim filename As String
+    Dim auftragsnummer As String
+    Dim idofferte As Long
+    idofferte = CLng(getValue("idofferte"))
+    Dim offerte As New COfferte
+    offerte.setid idofferte
+    auftragsnummer = offerte.getValue("id")
+    Set offerte = Nothing
+    Dim file As New CDatei
+    Dim files As CArray
+    Dim typ As String
+    typ = getValue("typ")
+    
+    Set files = getSchlusspapierByRegex(Me.id, auftragsnummer, MyCStr(position))
+    
+    If files.size = 0 Then
+        MsgBox getText(236), vbInformation
+    Else
+    
+        If typ = "COREL" _
+           Or typ = "ACCESS_BERICHT" _
+           Or typ = "EXCELWORKSHEET" _
+           Or typ = "EXCEL" _
+           Or typ = "EXCEL_ETIKETTEN" _
+           Or typ = "EXCEL_KLEMMENBESCHRIFTUNG" Then
+            If files.size = 1 Then
+                ShellExecute 0, "Open", files.pop, "", "", 1
+            End If
+            If files.size > 1 Then
+                MsgBox getText(234), vbInformation
+            End If
+        End If
+        
+        If typ = "EXCEL" _
+           Or typ = "EXCEL_ETIKETTEN" _
+           Or typ = "EXCEL_MATERIALLISTE" _
+           Or typ = "EXCEL_WERKSTATTLISTE" Then
+            If files.size = 1 Then
+                getSchlusspapier = files.pop
+            End If
+            If files.size > 1 Then
+                MsgBox getText(234), vbInformation
+            End If
+        End If
+        
+    End If
+    Set files = Nothing
+ex_getSchlusspapier:
+    Exit Function
+err_getSchlusspapier:
+    logerror "getSchlusspapier auftragsnummer=" & auftragsnummer & " position=" & position, SYSTEM_EXCEPTION
+    Resume ex_getSchlusspapier
+End Function
+
+Public Function isReportSuccessfullyCreated()
+    isReportSuccessfullyCreated = ReportSuccessfullyCreated
+End Function
+
+Public Function isPDFSuccessfullyCreated()
+    isPDFSuccessfullyCreated = PDFSuccessfullyCreated
+End Function
+
+Private Sub processPictureTableauLegende(ByRef offerte As COfferte, filename As String, Optional format As String = "a4")
+On Error GoTo err_processPictureTableauLegende
+    Dim Adresse As New CAdresse
+    Adresse.setid offerte.getValue("idkunde")
+    Dim logo As String
+    logo = Adresse.getValue("corel_logo")
+    If isNullOrEmtpy(logo) Then
+        'default logo
+        Set Adresse = New CAdresse
+        Adresse.setid getHauptadresseID
+        logo = Adresse.getValue("corel_logo")
+        Set Adresse = Nothing
+    End If
+    logo = getCurrentPath & "\" & logo
+    Dim legendenvariable As String
+    If format = "a4" Then
+        legendenvariable = "legende_picture_width_" & format
+    End If
+    If format = "a5" Then
+        legendenvariable = "legende_picture_width_" & format
+    End If
+    If format = "" Then
+        legendenvariable = "legende_picture_width"
+    End If
+    ex_insertPicture filename, logo, , CDbl(getSysValue(legendenvariable))
+ex_processPictureTableauLegende:
+    Exit Sub
+err_processPictureTableauLegende:
+    Resume ex_processPictureTableauLegende
+End Sub
+
+Public Function sortEtikettenArray(values As Variant, Optional replaceCharacterAndSpecialCharacter As Boolean = True)
+    If arrayLength(values) <= 0 Then
+        sortEtikettenArray = values
+        Exit Function
+    End If
+    Dim characters As Variant
+    'characters = Array("-=0", ".=0", "A=0", "B=1", "C=2", "D=3", "E=4", "F=5", "G=6", "H=7", "I=8", "J=9", "K=10", "L=11", "M=12", "N=13", "O=14", "P=15", "Q=16", "R=17", "S=18", "T=19", "U=20", "V=21", "W=22", "X=23", "Y=24", "Z=25")
+    characters = Array("-=1", ".=2", "A=3", "B=4", "C=5", "D=6", "E=7", "F=8", "G=9", "H=10", "I=11", "J=12", "K=13", "L=14", "M=15", "N=16", "O=17", "P=18", "Q=19", "R=20", "S=21", "T=22", "U=23", "V=24", "W=25", "X=26", "Y=27", "Z=28")
+    Dim arrMapping As New Dictionary
+    Dim arrNew As Variant
+    Dim a As Variant
+    Dim valuesNew As Variant
+    Dim key As String
+    For Each a In values
+        key = a
+        If replaceCharacterAndSpecialCharacter Then
+            Dim character As Variant
+            For Each character In characters
+                Dim v As Variant
+                Dim k As Variant
+                Dim val As Variant
+                val = Split(character, "=")
+                v = val(0)
+                k = val(1)
+                key = Replace(key, v, k)
+            Next
+        End If
+        arrMapping(key) = a
+        array_push arrNew, key
+    Next
+    QuickSort arrNew
+    Dim arr As Variant
+    Dim idx As Variant
+    For Each idx In arrNew
+        array_push arr, arrMapping(idx)
+    Next
+    sortEtikettenArray = arr
+End Function
+
+
+
+
+
