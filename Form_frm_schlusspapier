@@ -1,0 +1,409 @@
+Option Compare Database
+Option Explicit
+
+Public Sub updateCombo()
+On Error GoTo err_updateCombo
+    'aufüllen der arbeitspapiere (dispo + schmea combobox)
+    Dim auftragsnummer As String
+    Dim frm As New Form
+    Set frm = getFormObjectNew("frm_offerte", False)
+    auftragsnummer = frm.id
+    
+    Dim arbeitspapiere As New collection
+    Dim d As New CDatei
+    Dim arbeitspapierpath As String
+    Dim schlusspapierpath As String
+    
+    arbeitspapierpath = getAuftragsPath(auftragsnummer) & "\" & _
+                        getSysValue("auftrag_subdir_Arbeitspapiere") & "\"
+    schlusspapierpath = getAuftragsPath(auftragsnummer) & "\" & _
+                         getSysValue("auftrag_subdir_Schlusspapiere") & "\"
+                        
+    Dim apath As New CDatei
+    If apath.FolderExists(arbeitspapierpath) Then
+        'fill combo with Schema
+        d.GetFilesRecursive arbeitspapierpath, _
+                            "Schema.*", arbeitspapiere, , False
+        
+        fillComboWithArray Me.combo_datei_schema, arbeitspapiere, True
+        If arbeitspapiere.count = 1 Then
+            Me.combo_datei_schema = arbeitspapiere.item(1)
+        End If
+        
+        'fill combo with DISPO
+        Set arbeitspapiere = Nothing
+        d.GetFilesRecursive arbeitspapierpath, _
+                        "DISPO.*", arbeitspapiere, , False
+        fillComboWithArray Me.combo_datei_dispo, arbeitspapiere, True
+        If arbeitspapiere.count = 1 Then
+            Me.combo_datei_dispo = arbeitspapiere.item(1)
+        End If
+        
+        'fill combo with Schema or DISPO for Etiketten und Tableau
+        Set arbeitspapiere = Nothing
+        d.GetFilesRecursive schlusspapierpath, _
+                            "^[0-9]+.*[Schema|DISPO]_ETK-[A-Z|prov]\.des", arbeitspapiere, False, False
+        
+        fillComboWithArray Me.combo_datei_tablaulegende_etiketten, arbeitspapiere, True
+        If arbeitspapiere.count = 1 Then
+            Me.combo_datei_tablaulegende_etiketten = arbeitspapiere.item(1)
+        End If
+        
+        'fill combo with DISPO for Materialliste
+        Set arbeitspapiere = Nothing
+        d.GetFilesRecursive arbeitspapierpath, _
+                            "DISPO.*", arbeitspapiere, False, False
+        
+        fillComboWithArray Me.combo_datei_materialliste, arbeitspapiere, True
+        If arbeitspapiere.count = 1 Then
+            Me.combo_datei_materialliste = arbeitspapiere.item(1)
+        End If
+    End If
+    Set arbeitspapiere = Nothing
+    Set apath = Nothing
+ex_updateCombo:
+    Exit Sub
+err_updateCombo:
+    logerror "updateCombo", SYSTEM_EXCEPTION
+    Resume Next
+End Sub
+
+Private Sub Befehl46_Click()
+    If isNullOrEmtpy(Me.combo_datei_materialliste) Then
+        MsgBox getText(268), vbInformation
+        Exit Sub
+    End If
+    Dim offerte As New COfferte
+    offerte.setid Me.idofferte
+    Open_Explorer getAuftragsPath(offerte.getValue("id")) & "\" & getSysValue("auftrag_subdir_Schlusspapiere") & "\" & Me.combo_datei_materialliste
+    Set offerte = Nothing
+End Sub
+
+Private Sub btn_add_vorgabetext_version_bemerkung_Click()
+    addVorgabetext "versionisierung_bemerkung", Me.version_bemerkung
+End Sub
+
+Private Sub btn_add_vorgabetext_version_grund_Click()
+    addVorgabetext "versionisierung_grund", Me.version_grund
+    Me.combo_version_grund_vorgabetext.Requery
+End Sub
+
+Private Sub btn_close_Click()
+    DoCmd.Close
+End Sub
+
+Private Sub btn_delete_vorgabetext_grund_Click()
+    Dim vorgabetext As New CVorgabetext
+    vorgabetext.delete Me.combo_version_grund_vorgabetext
+    Set vorgabetext = Nothing
+    Me.combo_version_grund_vorgabetext.Requery
+End Sub
+
+Private Sub btn_delete_vorgabetext_version_Click()
+    Dim vorgabetext As New CVorgabetext
+    vorgabetext.delete Me.combo_version_bemerkung_vorgabetext
+    Set vorgabetext = Nothing
+    Me.combo_version_bemerkung_vorgabetext.Requery
+End Sub
+
+Private Sub btn_open_dispo_Click()
+    If isNullOrEmtpy(Me.combo_datei_dispo) Then
+        MsgBox getText(267), vbInformation
+        Exit Sub
+    End If
+    Dim offerte As New COfferte
+    offerte.setid Me.idofferte
+    Open_Explorer getAuftragsPath(offerte.getValue("id")) & "\" & getSysValue("auftrag_subdir_Arbeitspapiere") & "\" & Me.combo_datei_dispo
+    Set offerte = Nothing
+End Sub
+
+Private Sub btn_open_etiketten_Click()
+    If isNullOrEmtpy(Me.combo_datei_tablaulegende_etiketten) Then
+        MsgBox getText(268), vbInformation
+        Exit Sub
+    End If
+    Dim offerte As New COfferte
+    offerte.setid Me.idofferte
+    Open_Explorer getAuftragsPath(offerte.getValue("id")) & "\" & getSysValue("auftrag_subdir_Schlusspapiere") & "\" & Me.combo_datei_tablaulegende_etiketten
+    Set offerte = Nothing
+End Sub
+
+Private Sub btn_open_schema_Click()
+    If isNullOrEmtpy(Me.combo_datei_schema) Then
+        MsgBox getText(267), vbInformation
+        Exit Sub
+    End If
+    Dim offerte As New COfferte
+    offerte.setid Me.idofferte
+    Open_Explorer getAuftragsPath(offerte.getValue("id")) & "\" & getSysValue("auftrag_subdir_Arbeitspapiere") & "\" & Me.combo_datei_schema
+    Set offerte = Nothing
+End Sub
+
+Private Sub btn_pdf_Click()
+On Error GoTo err_btn_pdf_Click
+    Dim frmProgress As New Form
+    Set frmProgress = getFormObjectNew("frm_progress", False)
+    
+    ' check if ther is a version selected
+    If Me.versionisieren And isNullOrEmtpy(Me.version) Then
+        MsgBox getText(203), vbInformation
+        Exit Sub
+    End If
+    
+    Dim frm As New Form
+    Set frm = getFormObjectNew("frm_offerte", False)
+    Dim auftragsnummer As String
+    auftragsnummer = frm.id
+    Dim schlusspapier As New CSchlusspapier
+    schlusspapier.setid Me.id
+    frmProgress.reportname.caption = MyCStr(schlusspapier.getValue("report"))
+    frmProgress.nrofreports.caption = "Schlusspapier am Erstellen"
+    schlusspapier.createPDF auftragsnummer, , , , MyCStr(Me.position)
+    frm.liste_aenderungsuebersicht.Requery
+    
+    If schlusspapier.isReportSuccessfullyCreated Then
+        MsgBox getText(240), vbInformation
+    Else
+        MsgBox getText(241), vbInformation
+    End If
+    
+    Set schlusspapier = Nothing
+ex_btn_pdf_Click:
+    DoCmd.Hourglass False
+    closeForm "frm_progress"
+    Exit Sub
+err_btn_pdf_Click:
+    logerror "btn_pdf_Click idschlusspapier=" & Me.idschlusspapier & " auftragsnummer=" & auftragsnummer, SYSTEM_EXCEPTION
+    Set schlusspapier = Nothing
+    Resume ex_btn_pdf_Click
+End Sub
+
+Private Sub btn_print_Click()
+On Error GoTo err_btn_print_Click
+    Dim schlusspapier As New CSchlusspapier
+    schlusspapier.setid Me.id
+    schlusspapier.printSchlusspapier MyCStr(Me.position)
+    Set schlusspapier = Nothing
+ex_btn_print_Click:
+    Exit Sub
+err_btn_print_Click:
+   logerror "btn_print_Click report=" & Me.schlusspapier, SYSTEM_EXCEPTION
+   Resume ex_btn_print_Click
+End Sub
+
+Private Sub btn_print_MouseMove(Button As Integer, Shift As Integer, X As Single, Y As Single)
+'    Me.btn_print.ControlTipText = "Letzte Version ausdrucken (" & Me.drucker & ")"
+'    Me.Report.SetFocus
+End Sub
+
+Private Sub btn_report_Click()
+On Error GoTo err_btn_report_Click
+    Dim schlusspapier As New CSchlusspapier
+    schlusspapier.setid Me.id
+    schlusspapier.openSchlusspapier MyCStr(Me.position)
+    Set schlusspapier = Nothing
+    
+ex_btn_report_Click:
+    Exit Sub
+err_btn_report_Click:
+   logerror "btn_report_Click report=" & Me.schlusspapier, SYSTEM_EXCEPTION
+   Resume ex_btn_report_Click
+End Sub
+
+Private Sub btn_report_pdf_Click()
+    Dim auftragsnummer As String
+    Dim basepath As String
+    auftragsnummer = getAuftragsnummerFromForm
+    Dim path As String
+    basepath = getSchlusspapierePath(auftragsnummer)
+    Dim schlusspapier As New CSchlusspapier
+    Dim hasError As Boolean
+    hasError = schlusspapier.createActivatedPDF(auftragsnummer, Me.idofferte, MyCStr(Me.position))
+    
+    Dim frm As New Form
+    Set frm = getFormObjectNew("frm_offerte", False)
+    frm.liste_aenderungsuebersicht.Requery
+    If hasError Then
+        MsgBox getText(241), vbInformation
+    Else
+        MsgBox getText(220), vbInformation
+    End If
+End Sub
+
+Private Sub btn_report_print_Click()
+    Dim auftragsnummer As String
+    Dim basepath As String
+    auftragsnummer = getAuftragsnummerFromForm
+    Dim path As String
+    basepath = getSchlusspapierePath(auftragsnummer)
+    Dim schlusspapier As New CSchlusspapier
+    schlusspapier.printActivatedPDF auftragsnummer, Me.idofferte, MyCStr(Me.position)
+    MsgBox getText(235), vbInformation
+End Sub
+
+Private Sub btn_update_combo_vorgaben_Click()
+    updateCombo
+End Sub
+
+Private Sub chkbox_aktiviert_AfterUpdate()
+    Me.Requery
+End Sub
+
+Private Sub chkbox_versionisieren_Click()
+    If Not Me.chkbox_versionisieren Then
+        'save id because of requery will change it
+        Dim id As Long
+        id = Me.id
+        Me.Requery
+        
+        Dim schlusspapier As New CSchlusspapier
+        setColValue schlusspapier.table, _
+                    "version=''", _
+                    "id=" & id
+        Set schlusspapier = Nothing
+        
+        Me.Requery
+    End If
+End Sub
+
+Private Sub combo_report_version_AfterUpdate()
+    Me.Requery
+End Sub
+
+Private Sub combo_schlusspapier_aktivieren_AfterUpdate()
+    Dim schlusspapier As New CSchlusspapier
+    setColValue schlusspapier.table, _
+                "aktiviert=FALSE", _
+                "idofferte=" & Me.idofferte
+                
+    setColValue schlusspapier.table, _
+                "aktiviert=TRUE", _
+                "idofferte=" & Me.idofferte & " AND idschlusspapier IN (" & getColValue("tbl_g_schlusspapier_aktiviert", "ids", "id=" & Me.combo_schlusspapier_aktivieren) & ")"
+    Me.Requery
+    
+    Dim vorgabetext As New CVorgabetext
+    Dim standardgrundid As String
+    Dim standardaenderungid As String
+    
+    standardgrundid = getColValue("tbl_g_schlusspapier_aktiviert", _
+                                  "standard_grund_vorgabetext", _
+                                  "id=" & Me.combo_schlusspapier_aktivieren, , , True)
+    Me.version_grund = getColValue(vorgabetext.table, _
+                                   "vorgabetext", _
+                                   "[idvorgabetext] & '_' & [index]" & "='" & standardgrundid & "'")
+    
+    standardaenderungid = getColValue("tbl_g_schlusspapier_aktiviert", _
+                                      "standard_aenderung_vorgabetext", _
+                                      "id=" & Me.combo_schlusspapier_aktivieren, , , True)
+    Me.version_bemerkung = getColValue(vorgabetext.table, _
+                                       "vorgabetext", _
+                                       "[idvorgabetext] & '_' & [index]" & "='" & standardaenderungid & "'")
+    
+    combo_version_AfterUpdate
+    updateSchlusspapiere Me.version_bemerkung, "bemerkung"
+    updateSchlusspapiere Me.version_grund, "grund"
+    
+    Set schlusspapier = Nothing
+    Set vorgabetext = Nothing
+End Sub
+
+Private Sub combo_version_AfterUpdate()
+    
+    ' übertragen der version auf alle versionen in der liste,
+    ' welche version aktiviert haben
+    Dim schlusspapier As New CSchlusspapier
+    setColValue schlusspapier.table, _
+                "version='" & Me.combo_version & "'", _
+                "idofferte=" & Me.idofferte & " AND versionisieren=TRUE"
+    Set schlusspapier = Nothing
+    Me.refresh
+End Sub
+
+Private Sub combo_version_bemerkung_vorgabetext_AfterUpdate()
+    Dim vorgabtext As New CVorgabetext
+    vorgabtext.changeVorgabetext Me.version_bemerkung, Me.combo_version_bemerkung_vorgabetext, 204
+    
+    updateSchlusspapiere Me.version_bemerkung, "bemerkung"
+    
+    Set vorgabtext = Nothing
+End Sub
+
+Private Sub combo_version_grund_vorgabetext_AfterUpdate()
+    Dim vorgabtext As New CVorgabetext
+    vorgabtext.changeVorgabetext Me.version_grund, Me.combo_version_grund_vorgabetext, 191
+    
+    updateSchlusspapiere Me.version_grund, "grund"
+    
+    Set vorgabtext = Nothing
+End Sub
+
+Private Sub Form_Load()
+    updateCombo
+    
+    If Not isNullOrEmtpy(Me.idofferte) Then
+        Dim offerte As New COfferte
+        Me.position = getColValue(offerte.table, "[position]", offerte.idstr & "=" & Me.idofferte)
+        Set offerte = Nothing
+    End If
+    
+End Sub
+
+Function getAuftragsnummerFromForm()
+    Dim frm As New Form_frm_offerte
+    Set frm = Forms!frm_offerte.Form
+    getAuftragsnummerFromForm = MyCStr(frm.id)
+End Function
+
+Sub updateSchlusspapiere(text As String, field As String)
+    Dim schlusspapiere As New CSchlusspapier
+    schlusspapiere.updateField text, field, " idofferte=" & Me.idofferte & " AND versionisieren=TRUE AND aktiviert=TRUE"
+    Set schlusspapiere = Nothing
+    Me.Requery
+End Sub
+
+Private Sub Form_MouseWheel(ByVal page As Boolean, ByVal count As Long)
+On Error Resume Next
+    Me.Recordset.move count
+End Sub
+
+Private Sub id_DblClick(Cancel As Integer)
+    Dim schlusspapier As New CSchlusspapier
+    schlusspapier.setid Me.id
+    DoCmd.OpenTable schlusspapier.table, acViewNormal, acEdit
+    Set schlusspapier = Nothing
+End Sub
+
+Private Sub position_AfterUpdate()
+    Dim offerte As New COfferte
+    offerte.setid Me.idofferte
+    offerte.setValue "[position]", Me.position
+    setColValue offerte.table, _
+                "position='" & Me.position & "'", _
+                offerte.idstr & "=" & Me.idofferte
+    Set offerte = Nothing
+    
+    'requery frm_offerte
+    Dim frm As New Form
+    Set frm = getFormObjectNew("frm_offerte", False)
+    
+    'requery frm_auftrag
+    frm.Requery
+    Set frm = getChildForm("frm_offerte", "frm_auftrag_neu")
+    frm.position = Me.position
+End Sub
+
+Private Sub report_DblClick(Cancel As Integer)
+    Dim schlusspapier As New CSchlusspapier
+    schlusspapier.setid Me.id
+    MsgBox "Aktueller Drucker: " & schlusspapier.getValue("drucker") & vbCrLf & _
+           "Hinterlegter Drucker: " & schlusspapier.getTemplateValue("drucker")
+    Set schlusspapier = Nothing
+End Sub
+
+Private Sub version_bemerkung_AfterUpdate()
+    updateSchlusspapiere Me.version_bemerkung, "bemerkung"
+End Sub
+
+Private Sub version_grund_AfterUpdate()
+    updateSchlusspapiere Me.version_grund, "grund"
+End Sub
